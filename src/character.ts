@@ -1,19 +1,19 @@
 import { Character, Clients, defaultCharacter, ModelProviderName } from "@elizaos/core";
-import getGiftPlugin from "./custom-plugins/index.ts";
+import { ChainQuizPlugin } from "./custom-plugins/index.ts";
 
 export const character: Character = {
   ...defaultCharacter,
   // name: "Eliza",
-  plugins: [getGiftPlugin],
+  plugins: [ChainQuizPlugin],
   clients: [],
-  modelProvider: ModelProviderName.GOOGLE,
+  modelProvider: ModelProviderName.OPENAI,
   settings: {
     secrets: {},
     voice: {
       model: "en_US-hfc_female-medium",
     },
     chains: {
-      evm: ["avalancheFuji"],
+      evm: ["baseSepolia"],
     },
   },
 };

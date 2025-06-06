@@ -3,15 +3,15 @@ export * from "./types/index.ts";
 
 import type { Plugin } from "@elizaos/core";
 import { evmWalletProvider } from "./providers/wallet.ts";
-import { getGiftAction } from "./actions/getGift.ts";
 
-export const getGiftPlugin: Plugin = {
-    name: "getGift",
-    description: "EVM blockchain integration plugin",
-    providers: [evmWalletProvider],
-    evaluators: [],
-    services: [],
-    actions: [getGiftAction],
+export const ChainQuizPlugin: Plugin = {
+  name: "chainQuiz",
+  description: "EVM blockchain integration plugin",
+  providers: [evmWalletProvider],
+  evaluators: [],
+  services: [],
+  clients: [], // no Twitter/Discord—our UI will be Next.js
+
 };
 
-export default getGiftPlugin;
+export default ChainQuizPlugin;
