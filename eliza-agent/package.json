@@ -27,7 +27,7 @@
     "amqplib": "0.10.5",
     "better-sqlite3": "11.5.0",
     "body-parser": "^2.2.0",
-    "dotenv": "^16.4.7",
+    "dotenv": "^16.5.0",
     "ethers": "v5",
     "express": "^5.1.0",
     "fs": "0.0.1-security",

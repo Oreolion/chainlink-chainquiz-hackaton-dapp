@@ -1,475 +1,318 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.19;
 
-// ─── Chainlink Imports ────────────────────────────────────────────────────────
-// Functions:
-import {FunctionsClient}
-    from "@chainlink/contracts/src/v0.8/functions/v1_0_0/FunctionsClient.sol";
-import {FunctionsRequest}
-    from "@chainlink/contracts/src/v0.8/functions/v1_0_0/libraries/FunctionsRequest.sol";
+// ChainQuiz.sol
+// For Base Sepolia (chain ID 84531)
 
-// VRF V2.5:
-import {VRFConsumerBaseV2Plus}
-    from "@chainlink/contracts/src/v0.8/vrf/dev/VRFConsumerBaseV2Plus.sol";
-import {VRFV2PlusClient}
-    from "@chainlink/contracts/src/v0.8/vrf/dev/libraries/VRFV2PlusClient.sol";
+import { FunctionsClient } from "@chainlink/contracts/src/v0.8/functions/v1_0_0/FunctionsClient.sol";
+import { ConfirmedOwner } from "@chainlink/contracts/src/v0.8/shared/access/ConfirmedOwner.sol";
+import { FunctionsRequest } from "@chainlink/contracts/src/v0.8/functions/v1_0_0/libraries/FunctionsRequest.sol";
 
-// Automation (Keepers):
-import {AutomationCompatibleInterface}
-    from "@chainlink/contracts/src/v0.8/automation/AutomationCompatible.sol";
-
-// ConfirmedOwner:
-import {ConfirmedOwner}
-    from "@chainlink/contracts/src/v0.8/shared/access/ConfirmedOwner.sol";
-
-// ─── OpenZeppelin Imports ─────────────────────────────────────────────────────
-import {IERC20}
-    from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-
-/*
- * ChainQuiz.sol
- *
- * A stake-to-play quiz that integrates:
- *  1) Chainlink Functions → calls ElizaOS `/generateQuiz` & `/verifyAnswer`
- *  2) Chainlink VRF V2.5   → random bonus events via VRFConsumerBaseV2Plus
- *  3) Chainlink Keepers    → hourly leaderboard refresh via AutomationCompatible
- *  4) ERC-20 staking in $QUIZ, with a 45-second timeout per question (10 total)
- *  5) cancelQuiz()         → refund stake if user never finishes in time
- *
- * Replace all placeholder constants (subscription IDs, token addresses, URLs, etc.) with your own values.
- */
-
-// — Chainlink Functions (Sepolia) —
-address constant FUNCTIONS_ROUTER         = 0xf9B8fc078197181C841c296C876945aaa425B278;
-bytes32 constant DON_ID                   = 0x66756e2d626173652d7365706f6c69612d310000000000000000000000000000;
-uint64 constant FUNCTIONS_SUBSCRIPTION_ID = 1234;            // ← Your Functions subscription ID
-uint32 constant FUNCTIONS_CALLBACK_GAS     = 300_000;         // Gas for fulfillRequest callback
-uint256 constant FUNCTIONS_FEE             = 0.1 * 10**18;    // 0.1 LINK (in Juels)
-
-// — Chainlink VRF V2.5 (Sepolia) —
-address constant VRF_COORDINATOR_V2        = 0x2eD832Ba664535e5886b75D64C46EB9a228C2610;
-uint256 constant VRF_SUBSCRIPTION_ID_V2    = 5678;             // ← Your VRF V2.5 subscription ID
-bytes32 constant VRF_KEY_HASH_V2           = 0x354d2f95da55398f44b7cff77da56283d9c6c829a4bdf1bbcaf2ad6a4d081f61;
-uint16 constant REQUEST_CONFIRMATIONS_V2   = 3;
-uint32 constant CALLBACK_GAS_LIMIT_V2      = 100_000;          // As per starter guide
-uint32 constant NUM_WORDS_V2               = 1;                // Requesting 1 random word
-
-// — LINK & $QUIZ Token Addresses (Sepolia) —
-address constant LINK_TOKEN                = 0x779877A7B0D9E8603169DdbD7836e478b4624789;
-address constant QUIZ_TOKEN_ADDRESS        = 0x71f517833cF8c8A88f18c53ca9b1CeeD34cADc6d; // ← Your $QUIZ token
-
-// — Quiz Configuration —
-uint256 constant ENTRY_FEE                 = 10 * 10**18;   // 10 $QUIZ (18 decimals)
-uint256 constant QUESTION_TIMEOUT          = 45;            // 45 seconds per question
-uint256 constant NUM_QUESTIONS             = 10;            // Exactly 10 questions per quiz
-
-// — Off-chain Endpoints (placeholders) —
-string constant ELIZAOS_URL                = "https://my-elizaos.example.com";
-string constant SUPABASE_URL               = "https://cwizrprvyzneltghznna.supabase.co";
-
-// — DON-Hosted Secrets (slot|version) —
-uint8  constant DON_SLOT_ID                = 0;
-uint8  constant DON_SECRETS_VERSION        = 1;
-
-/**
- * @title ChainQuiz
- * @notice A quiz contract integrating Chainlink Functions, VRF V2.5, and Keepers.
- *
- * If you are not yet using ElizaOS or Supabase, you may remove any references
- * to ELIZAOS_URL, SUPABASE_URL, and the Functions logic. Below is a fully
- * compilable version with all features included.
- */
-contract ChainQuiz is
-    FunctionsClient,               // inherits ConfirmedOwner internally
-    ConfirmedOwner,                // explicit to linearize properly
-    VRFConsumerBaseV2Plus,
-    AutomationCompatibleInterface
-{
+contract ChainQuiz is FunctionsClient, ConfirmedOwner {
     using FunctionsRequest for FunctionsRequest.Request;
 
-    // ────────────────────────────────────────────────────────────────────────────────
-    // STORAGE
-    // ────────────────────────────────────────────────────────────────────────────────
+    // ─────────────────────────────────────────────────────────────────
+    // 1. CONSTANTS
+    // ─────────────────────────────────────────────────────────────────
+    address private constant ROUTER = 0xf9B8fc078197181C841c296C876945aaa425B278;
+    bytes32 private constant DON_ID =
+        hex"66756e2d626173652d7365706f6c69612d310000000000000000000000000000";
+    uint32 private constant CALLBACK_GAS_LIMIT = 300000;
 
-    // — Chainlink VRF V2.5 —────────────────────────────────────────────────────────────
-    // `s_vrfCoordinator` is inherited from VRFConsumerBaseV2Plus
-    mapping(uint256 => address) private vrfRequestToPlayer;  // requestId → player
-
-    // — ERC-20 Staking Token ($QUIZ) —──────────────────────────────────────────────────
-    IERC20 public immutable quizToken;
-
-    // — Player Session Struct —────────────────────────────────────────────────────────
-    struct PlayerSession {
-        uint256 startTime;       // timestamp when first question delivered
-        uint256 questionIndex;   // 0..(NUM_QUESTIONS−1)
-        uint256 stakeAmount;     // always ENTRY_FEE
-        uint8   correctCount;    // how many answers correct so far
-        string  quizId;          // returned from `/generateQuiz`
-        bool    isActive;        // session active flag
+    // ─────────────────────────────────────────────────────────────────
+    // 2. STATE & EVENTS
+    // ─────────────────────────────────────────────────────────────────
+    struct QuizSession {
+        string quizId;
+        uint8 questionIndex;
+        uint256 correctCount;
+        uint256 startedAt;
+        bool active;
+        uint8 numQuestions; // Store number of questions
     }
-    mapping(address => PlayerSession) public sessions;
-    address[] public activePlayers;
+    mapping(address => QuizSession) public sessions;
+    mapping(bytes32 => address) public requestToPlayer; // Map requestId to player address
 
-    // — Leaderboard —──────────────────────────────────────────────────────────────────
-    mapping(address => uint256) public leaderboardScore;
-    uint256 public lastLeaderboardUpdate;
-    uint256 public updateInterval;            // in seconds, set by owner
+    event QuizGenerated(address indexed player, string quizId, uint8 numQuestions);
+    event AnswerSubmitted(address indexed player, bool isCorrect, uint8 questionIndex);
+    event QuizCompleted(address indexed player, uint8 correctCount);
+    event QuizCancelled(address indexed player);
 
-    // — EVENTS —────────────────────────────────────────────────────────────────────────
-    event QuizRequested(address indexed player, bytes32 indexed requestId);
-    event QuizGenerated(address indexed player, string quizId);
-    event AnswerSubmitted(address indexed player, bool correct, uint256 timeElapsed);
-    event QuizCompleted(address indexed player, uint8 totalCorrect, uint256 reward);
-    event RandomBonusRequested(address indexed player, uint256 requestId);
-    event BonusAwarded(address indexed player, uint256 bonus);
-    event LeaderboardRefreshed(uint256 timestamp);
-    event QuizCancelled(address indexed player, uint256 refunded);
-    event UpdateIntervalSet(uint256 newInterval);
+    // ─────────────────────────────────────────────────────────────────
+    // 3. CONSTRUCTOR
+    // ─────────────────────────────────────────────────────────────────
+    constructor() FunctionsClient(ROUTER) ConfirmedOwner(msg.sender) {}
 
-    // ────────────────────────────────────────────────────────────────────────────────
-    // CONSTRUCTOR
-    // ────────────────────────────────────────────────────────────────────────────────
-    constructor()
-        FunctionsClient(FUNCTIONS_ROUTER)
-        ConfirmedOwner(msg.sender)
-        VRFConsumerBaseV2Plus(VRF_COORDINATOR_V2)
-    {
-        quizToken             = IERC20(QUIZ_TOKEN_ADDRESS);
-        lastLeaderboardUpdate = block.timestamp;
-        updateInterval        = 3600; // default 1 hour
+    // ─────────────────────────────────────────────────────────────────
+    // 4. HARD-CODED UTILITIES
+    // ─────────────────────────────────────────────────────────────────
+    function _hardcoded(string memory key) internal pure returns (string memory) {
+        if (keccak256(bytes(key)) == keccak256(bytes("ELIZAOS_URL"))) {
+            return "http://localhost:5000"; // Update to production URL
+        }
+        if (keccak256(bytes(key)) == keccak256(bytes("SUPABASE_URL"))) {
+            return "https://cwizrprvyzneltghznna.supabase.co";
+        }
+        return "";
     }
 
-    // ────────────────────────────────────────────────────────────────────────────────
-    // PHASE 1: START A NEW QUIZ
-    // ────────────────────────────────────────────────────────────────────────────────
 
-    /**
-     * @notice Stake ENTRY_FEE $QUIZ and request a new quiz from ElizaOS.
-     * @param domains An array of ≥4 domains (e.g. ["DeFi","Oracles","ZKP","Layer2"]).
-     */
+
+    function _hardcodedUint(string memory key) internal pure returns (uint256) {
+        if (keccak256(bytes(key)) == keccak256(bytes("DON_HOSTED_SECRETS_SLOT_ID"))) {
+            return 0;
+        }
+        if (keccak256(bytes(key)) == keccak256(bytes("DON_HOSTED_SECRETS_VERSION"))) {
+            return 1749025465;
+        }
+        if (keccak256(bytes(key)) == keccak256(bytes("SUBSCRIPTION_ID"))) {
+            return 330;
+        }
+        return 0;
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // 5. INLINE JAVASCRIPT SOURCES
+    // ─────────────────────────────────────────────────────────────────
+    function _generateSource() internal pure returns (string memory) {
+        return
+            "const elizaBase = args[2];"
+            "const url = `${elizaBase}/generateQuiz`; "
+            "const payload = JSON.stringify({ domains: JSON.parse(args[0]), playerAddress: args[1] }); "
+            "const res = await Functions.makeHttpRequest({ url, method: 'POST', headers: { 'Content-Type': 'application/json' }, data: payload }); "
+            "if (res.error) throw new Error(res.error.message); "
+            "const quizId = res.data.quizId; "
+            "const numQ = res.data.numQuestions; "
+            "return Functions.encodeString(`${quizId}|${numQ}`);";
+    }
+
+    function _verifySource() internal pure returns (string memory) {
+        return
+            "const elizaBase = args[3];"
+            "const url = `${elizaBase}/verifyAnswer`; "
+            "const payload = JSON.stringify({ quizId: args[0], questionId: args[1], selectedIndex: parseInt(args[2], 10) }); "
+            "const res = await Functions.makeHttpRequest({ url, method: 'POST', headers: { 'Content-Type': 'application/json' }, data: payload }); "
+            "if (res.error) throw new Error(res.error.message); "
+            "const correct = res.data.isCorrect ? '1' : '0'; "
+            "return Functions.encodeString(correct);";
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // 6. startQuiz() – builds and sends the generateQuiz request
+    // ─────────────────────────────────────────────────────────────────
     function startQuiz(string[] calldata domains) external {
-        PlayerSession storage s = sessions[msg.sender];
-        require(!s.isActive, "Active session exists");
-        require(domains.length >= 4, "Select >= 4 domains");
+        require(domains.length >= 5, "Select at least 5 domains");
+        QuizSession storage s = sessions[msg.sender];
+        require(!s.active, "Quiz already in progress");
 
-        // 1) Transfer in $QUIZ stake
-        bool ok = quizToken.transferFrom(msg.sender, address(this), ENTRY_FEE);
-        require(ok, "Stake transfer failed");
+        // Mark session active
+        s.active = true;
+        s.questionIndex = 0;
+        s.correctCount = 0;
+        s.startedAt = block.timestamp;
+        s.numQuestions = 0; // Will be set in fulfillRequest
 
-        // 2) Build Chainlink Functions request for /generateQuiz
+        // Build Chainlink Functions request
         FunctionsRequest.Request memory req;
-        req.initializeRequestForInlineJavaScript(_generateQuizSource());
+        req.initializeRequestForInlineJavaScript(_generateSource());
 
-        // args[0] = JSON(domains array)
-        // args[1] = player hex string
-        // args[2] = ELIZAOS_URL
-        // args[3] = SUPABASE_URL
-        // args[4] = "<slot>|<version>" for DON secrets
-        string;
-        argsArr[0] = _encodeDomains(domains);
-        argsArr[1] = _toHexString(msg.sender);
-        argsArr[2] = ELIZAOS_URL;
-        argsArr[3] = SUPABASE_URL;
-        argsArr[4] = string(
+        // Prepare all five arguments
+        string memory domainsJson = _encodeDomains(domains);
+        string memory playerHex = _toHexString(msg.sender);
+        string memory eliza = _hardcoded("ELIZAOS_URL");
+        string memory supa = _hardcoded("SUPABASE_URL");
+        string memory slotVer = string(
             abi.encodePacked(
-                _uintToString(DON_SLOT_ID),
-                "|",
-                _uintToString(DON_SECRETS_VERSION)
+                uint2str(_hardcodedUint("DON_HOSTED_SECRETS_SLOT_ID")), "|",
+                uint2str(_hardcodedUint("DON_HOSTED_SECRETS_VERSION"))
             )
         );
-        req.addArgs(argsArr);
-        req.addDONHostedSecrets(DON_SLOT_ID, DON_SECRETS_VERSION);
 
-        // 3) Send the request
+        // Declare and populate args array
+        string[] memory args = new string[](5);
+        args[0] = domainsJson;
+        args[1] = playerHex;
+        args[2] = eliza;
+        args[3] = supa;
+        args[4] = slotVer;
+        req.setArgs(args);
+
+        // Send the request on-chain
         bytes32 requestId = _sendRequest(
             req.encodeCBOR(),
-            FUNCTIONS_SUBSCRIPTION_ID,
-            FUNCTIONS_CALLBACK_GAS,
+            uint64(_hardcodedUint("SUBSCRIPTION_ID")),
+            CALLBACK_GAS_LIMIT,
             DON_ID
         );
 
-        // 4) Record placeholder session; quizId & startTime set in callback
-        sessions[msg.sender] = PlayerSession({
-            startTime:      0,
-            questionIndex:  0,
-            stakeAmount:    ENTRY_FEE,
-            correctCount:   0,
-            quizId:         "",
-            isActive:       true
-        });
-        activePlayers.push(msg.sender);
-
-        emit QuizRequested(msg.sender, requestId);
+        // Store requestId to player mapping
+        requestToPlayer[requestId] = msg.sender;
+        s.quizId = string(abi.encodePacked(requestId));
     }
 
-    /**
-     * @dev Inline JavaScript for calling ElizaOS `/generateQuiz`.
-     */
-    function _generateQuizSource() internal pure returns (string memory) {
-        return
-        // 1) Build HTTP POST to ElizaOS /generateQuiz
-        "const url = `${args[2]}/generateQuiz`;\n"
-        "const payload = JSON.stringify({ domains: JSON.parse(args[0]), playerAddress: args[1] });\n"
-        "const res = await Functions.makeHttpRequest({\n"
-        "  url, method: 'POST', headers: { 'Content-Type': 'application/json' }, data: payload\n"
-        "});\n"
-        "if(res.error) { throw Error(res.error.message); }\n"
-        // 2) ElizaOS returns { quizId: string, numQuestions: 10 }
-        "const quizId = res.data.quizId;\n"
-        // We only need quizId on-chain; numQuestions is always 10 in our MVP.
-        "return Functions.encodeString(quizId);\n";
+    // ─────────────────────────────────────────────────────────────────
+    // 7. submitAnswer() – builds and sends the verifyAnswer request
+    // ─────────────────────────────────────────────────────────────────
+    function submitAnswer(uint8 selectedIndex) external {
+        QuizSession storage s = sessions[msg.sender];
+        require(s.active, "No active quiz");
+        require(block.timestamp <= s.startedAt + 450, "Time expired");
+
+        // Build Chainlink Functions request
+        FunctionsRequest.Request memory req;
+        req.initializeRequestForInlineJavaScript(_verifySource());
+
+        // Prepare all five arguments
+        string memory quizIdStr = s.quizId;
+        string memory qId = string(abi.encodePacked("q", uint2str(s.questionIndex + 1)));
+        string memory idxStr = uint2str(selectedIndex);
+        string memory eliza = _hardcoded("ELIZAOS_URL");
+        string memory slotVer = string(
+            abi.encodePacked(
+                uint2str(_hardcodedUint("DON_HOSTED_SECRETS_SLOT_ID")), "|",
+                uint2str(_hardcodedUint("DON_HOSTED_SECRETS_VERSION"))
+            )
+        );
+
+        // Declare and populate args array
+        string[] memory args = new string[](5);
+        args[0] = quizIdStr;
+        args[1] = qId;
+        args[2] = idxStr;
+        args[3] = eliza;
+        args[4] = slotVer;
+        req.setArgs(args);
+
+        // Send the request on-chain
+        bytes32 requestId = _sendRequest(
+            req.encodeCBOR(),
+            uint64(_hardcodedUint("SUBSCRIPTION_ID")),
+            CALLBACK_GAS_LIMIT,
+            DON_ID
+        );
+
+        // Store requestId to player mapping
+        requestToPlayer[requestId] = msg.sender;
     }
 
-    /**
-     * @notice Chainlink Functions callback for `/generateQuiz`.
-     * @param requestId Chainlink request ID
-     * @param response  Encoded quizId (string)
-     * @param err       Error bytes (if any)
-     *
-     * In production, map requestId→player. Here we assume msg.sender is the player.
-     */
+    // ─────────────────────────────────────────────────────────────────
+    // 8. cancelQuiz() – refund placeholder
+    // ─────────────────────────────────────────────────────────────────
+    function cancelQuiz() external {
+        QuizSession storage s = sessions[msg.sender];
+        require(s.active, "No active quiz");
+        require(block.timestamp > s.startedAt + 450, "Too early to cancel");
+
+        s.active = false;
+        emit QuizCancelled(msg.sender);
+        // TODO: refund 10 $QUIZ tokens to msg.sender
+    }
+
+    // ─────────────────────────────────────────────────────────────────
+    // 9. fulfillRequest() – handles both generateQuiz and verifyAnswer callbacks
+    // ─────────────────────────────────────────────────────────────────
     function fulfillRequest(
         bytes32 requestId,
         bytes memory response,
-        bytes memory err
+        bytes memory /*err*/
     ) internal override {
-        string memory quizId = string(response);
-        address player = msg.sender;
-        PlayerSession storage s = sessions[player];
-        require(s.isActive, "No active session");
+        // Retrieve player address from requestId
+        address player = requestToPlayer[requestId];
+        require(player != address(0), "Invalid request ID");
+        QuizSession storage s = sessions[player];
+        string memory reqStr = string(abi.encodePacked(requestId));
 
-        s.quizId    = quizId;
-        s.startTime = block.timestamp;
-        emit QuizGenerated(player, quizId);
-    }
-
-    // ────────────────────────────────────────────────────────────────────────────────
-    // PHASE 2: SUBMIT ANSWER & VERIFY
-    // ────────────────────────────────────────────────────────────────────────────────
-
-    /**
-     * @notice Submit an answer for the current question. Must be within 45s window.
-     * @param selectedIndex 0..2 for chosen answer, or 255 to indicate timeout.
-     */
-    function submitAnswer(uint8 selectedIndex) external {
-        PlayerSession storage s = sessions[msg.sender];
-        require(s.isActive, "No active session");
-        require(s.questionIndex < NUM_QUESTIONS, "Quiz completed");
-
-        uint256 questionStart = s.startTime + (s.questionIndex * QUESTION_TIMEOUT);
-        require(block.timestamp <= questionStart + QUESTION_TIMEOUT, "Time expired");
-
-        FunctionsRequest.Request memory req;
-        req.initializeRequestForInlineJavaScript(_verifyAnswerSource());
-
-        // args[0] = quizId
-        // args[1] = questionId (“q1”, “q2”, …)
-        // args[2] = selectedIndex (string)
-        // args[3] = ELIZAOS_URL
-        // args[4] = SUPABASE_URL
-        // args[5] = "<slot>|<version>" for DON secrets
-        string;
-        argsArr[0] = s.quizId;
-        argsArr[1] = string(abi.encodePacked("q", _uintToString(s.questionIndex + 1)));
-        argsArr[2] = _uintToString(selectedIndex);
-        argsArr[3] = ELIZAOS_URL;
-        argsArr[4] = SUPABASE_URL;
-        argsArr[5] = string(
-            abi.encodePacked(
-                _uintToString(DON_SLOT_ID),
-                "|",
-                _uintToString(DON_SECRETS_VERSION)
-            )
-        );
-        req.addArgs(argsArr);
-        req.addDONHostedSecrets(DON_SLOT_ID, DON_SECRETS_VERSION);
-
-        bytes32 requestId = _sendRequest(
-            req.encodeCBOR(),
-            FUNCTIONS_SUBSCRIPTION_ID,
-            FUNCTIONS_CALLBACK_GAS,
-            DON_ID
-        );
-
-        emit QuizRequested(msg.sender, requestId);
-    }
-
-    /**
-     * @dev Inline JavaScript for calling ElizaOS `/verifyAnswer`.
-     */
-    function _verifyAnswerSource() internal pure returns (string memory) {
-        return
-        "const url = `${args[3]}/verifyAnswer`;\n"
-        "const payload = JSON.stringify({ quizId: args[0], questionId: args[1], selectedIndex: parseInt(args[2]) });\n"
-        "const res = await Functions.makeHttpRequest({\n"
-        "  url, method: 'POST', headers: { 'Content-Type': 'application/json' }, data: payload\n"
-        "});\n"
-        "if(res.error) { throw Error(res.error.message); }\n"
-        "const isCorrect = res.data.isCorrect ? '1' : '0';\n"
-        "return Functions.encodeString(isCorrect);\n";
-    }
-
-    /**
-     * @notice Chainlink Functions callback for `/verifyAnswer`.
-     * @param requestId Chainlink request ID
-     * @param response  “1” or “0” encoded
-     * @param err       Error bytes (if any)
-     */
-    function fulfillAnswerCallback(
-        bytes32 requestId,
-        bytes memory response,
-        bytes memory err
-    ) internal {
-        address player = msg.sender;
-        PlayerSession storage s = sessions[player];
-        require(s.isActive, "No active session");
-
-        bool correct = (keccak256(response) == keccak256(bytes("1")));
-        if (correct) {
-            s.correctCount++;
-        }
-        uint256 elapsed = block.timestamp - (s.startTime + (s.questionIndex * QUESTION_TIMEOUT));
-        emit AnswerSubmitted(player, correct, elapsed);
-
-        s.questionIndex++;
-    }
-
-    // ────────────────────────────────────────────────────────────────────────────────
-    // PHASE 3: FINISH QUIZ & PAY OUT
-    // ────────────────────────────────────────────────────────────────────────────────
-
-    /**
-     * @notice Finish quiz once all NUM_QUESTIONS have been answered. Pays out proportionally.
-     */
-    function finishQuiz() external {
-        PlayerSession storage s = sessions[msg.sender];
-        require(s.isActive, "No active session");
-        require(s.questionIndex == NUM_QUESTIONS, "Not all questions answered");
-
-        uint256 reward = (s.stakeAmount * s.correctCount) / NUM_QUESTIONS;
-        if (reward > 0) {
-            bool ok = quizToken.transfer(msg.sender, reward);
-            require(ok, "Reward transfer failed");
-        }
-        leaderboardScore[msg.sender] += (uint256(s.correctCount) * s.stakeAmount);
-        emit QuizCompleted(msg.sender, s.correctCount, reward);
-
-        delete sessions[msg.sender];
-    }
-
-    // ────────────────────────────────────────────────────────────────────────────────
-    // PHASE 4: CANCEL QUIZ (REFUND ON TIMEOUT)
-    // ────────────────────────────────────────────────────────────────────────────────
-
-    /**
-     * @notice If the user never finishes within 10×QUESTION_TIMEOUT, they can cancel & refund.
-     */
-    function cancelQuiz() external {
-        PlayerSession storage s = sessions[msg.sender];
-        require(s.isActive, "No active session");
-        uint256 totalTimeout = s.startTime + (QUESTION_TIMEOUT * NUM_QUESTIONS);
-        require(block.timestamp > totalTimeout, "Quiz still in progress");
-
-        uint256 refund = s.stakeAmount;
-        delete sessions[msg.sender];
-        bool ok = quizToken.transfer(msg.sender, refund);
-        require(ok, "Refund transfer failed");
-
-        emit QuizCancelled(msg.sender, refund);
-    }
-
-    // ────────────────────────────────────────────────────────────────────────────────
-    // PHASE 5: RANDOM BONUS (VRF V2.5)
-    // ────────────────────────────────────────────────────────────────────────────────
-
-    /**
-     * @notice Request randomness for a “bonus challenge” if you have an active session.
-     */
-    function requestRandomBonus() external {
-        PlayerSession storage s = sessions[msg.sender];
-        require(s.isActive, "No active session");
-
-        VRFV2PlusClient.RandomWordsRequest memory request = VRFV2PlusClient.RandomWordsRequest({
-            keyHash:              VRF_KEY_HASH_V2,
-            subId:                VRF_SUBSCRIPTION_ID_V2,
-            requestConfirmations: REQUEST_CONFIRMATIONS_V2,
-            callbackGasLimit:     CALLBACK_GAS_LIMIT_V2,
-            numWords:             NUM_WORDS_V2,
-            extraArgs:            VRFV2PlusClient._argsToBytes(
-                                    VRFV2PlusClient.ExtraArgsV1({ nativePayment: false })
-                                  )
-        });
-
-        uint256 requestId = s_vrfCoordinator.requestRandomWords(request);
-        vrfRequestToPlayer[requestId] = msg.sender;
-        emit RandomBonusRequested(msg.sender, requestId);
-    }
-
-    /**
-     * @notice VRF V2.5 callback: if (randomness % 5 == 0), award a 5× ENTRY_FEE bonus.
-     */
-    function fulfillRandomWords(uint256 requestId, uint256[] calldata randomWords)
-        internal
-        override
-    {
-        address player = vrfRequestToPlayer[requestId];
-        require(player != address(0), "Unknown VRF request");
-
-        uint256 randomness = randomWords[0];
-        if (randomness % 5 == 0) {
-            uint256 bonus = 5 * ENTRY_FEE;
-            leaderboardScore[player] += bonus;
-            emit BonusAwarded(player, bonus);
-        }
-        delete vrfRequestToPlayer[requestId];
-    }
-
-    // ────────────────────────────────────────────────────────────────────────────────
-    // PHASE 6: AUTOMATION (Chainlink Keepers)
-    // ────────────────────────────────────────────────────────────────────────────────
-
-    /**
-     * @notice Allows owner to set leaderboard refresh interval (in seconds).
-     */
-    function setUpdateInterval(uint256 _interval) external onlyOwner {
-        updateInterval = _interval;
-        emit UpdateIntervalSet(_interval);
-    }
-
-    /**
-     * @notice Keeper check: returns true if > updateInterval seconds passed since last refresh.
-     */
-    function checkUpkeep(bytes calldata) external view override returns (bool upkeepNeeded, bytes memory) {
-        upkeepNeeded = (block.timestamp - lastLeaderboardUpdate) > updateInterval;
-    }
-
-    /**
-     * @notice Keeper perform: updates lastLeaderboardUpdate & emits LeaderboardRefreshed.
-     */
-    function performUpkeep(bytes calldata) external override {
-        if ((block.timestamp - lastLeaderboardUpdate) > updateInterval) {
-            lastLeaderboardUpdate = block.timestamp;
-            emit LeaderboardRefreshed(block.timestamp);
-        }
-    }
-
-    // ────────────────────────────────────────────────────────────────────────────────
-    // INTERNAL UTILITIES
-    // ────────────────────────────────────────────────────────────────────────────────
-
-    function _encodeDomains(string[] calldata arr) internal pure returns (string memory) {
-        bytes memory result = "[";
-        for (uint256 i = 0; i < arr.length; i++) {
-            result = abi.encodePacked(result, '"', arr[i], '"');
-            if (i < arr.length - 1) {
-                result = abi.encodePacked(result, ",");
+        if (keccak256(bytes(reqStr)) == keccak256(bytes(s.quizId))) {
+            // If questionIndex == 0, it’s the generateQuiz callback
+            if (s.questionIndex == 0) {
+                (string memory realQuizId, uint256 numQ) = _parseQuizResponse(string(response));
+                s.quizId = realQuizId;
+                s.numQuestions = uint8(numQ); // Store number of questions
+                emit QuizGenerated(player, realQuizId, uint8(numQ));
+            } else {
+                // Otherwise, it’s the verifyAnswer callback
+                bool isCorrect = (uint8(bytes(string(response))[0]) == uint8(bytes("1")[0]));
+                if (isCorrect) {
+                    s.correctCount++;
+                }
+                emit AnswerSubmitted(player, isCorrect, s.questionIndex);
+                s.questionIndex++;
+                if (s.questionIndex >= s.numQuestions) {
+                    s.active = false;
+                    emit QuizCompleted(player, uint8(s.correctCount));
+                    // TODO: transfer reward tokens to player
+                }
             }
         }
-        return string(abi.encodePacked(result, "]"));
+
+        // Clean up request mapping
+        delete requestToPlayer[requestId];
     }
 
-    function _uintToString(uint256 v) internal pure returns (string memory) {
-        if (v == 0) return "0";
+    // ─────────────────────────────────────────────────────────────────
+    // 10. UTILITY FUNCTIONS
+    // ─────────────────────────────────────────────────────────────────
+    function _encodeDomains(string[] calldata domains) internal pure returns (string memory) {
+        string memory json = "[";
+        for (uint256 i = 0; i < domains.length; i++) {
+            json = string(abi.encodePacked(json, '"', domains[i], '"'));
+            if (i < domains.length - 1) {
+                json = string(abi.encodePacked(json, ","));
+            }
+        }
+        return string(abi.encodePacked(json, "]"));
+    }
+
+    function _parseQuizResponse(string memory resp) internal pure returns (string memory, uint256) {
+        bytes memory b = bytes(resp);
+        uint256 sepIndex = 0;
+        while (sepIndex < b.length && b[sepIndex] != "|") {
+            sepIndex++;
+        }
+        string memory quizIdStr = string(_slice(b, 0, sepIndex));
+        uint256 numQ = _atoi(string(_slice(b, sepIndex + 1, b.length - (sepIndex + 1))));
+        return (quizIdStr, numQ);
+    }
+
+    function _slice(
+        bytes memory data,
+        uint256 start,
+        uint256 len
+    ) internal pure returns (bytes memory) {
+        bytes memory ret = new bytes(len);
+        for (uint256 i = 0; i < len; i++) {
+            ret[i] = data[start + i];
+        }
+        return ret;
+    }
+
+    function _atoi(string memory s) internal pure returns (uint256) {
+        bytes memory b = bytes(s);
+        uint256 result = 0;
+        for (uint256 i = 0; i < b.length; i++) {
+            if (b[i] >= "0" && b[i] <= "9") {
+                result = result * 10 + (uint8(b[i]) - uint8(bytes1("0")));
+            }
+        }
+        return result;
+    }
+
+    function _toHexString(address addr) internal pure returns (string memory) {
+        bytes memory alphabet = "0123456789abcdef";
+        bytes memory dataBytes = new bytes(42);
+        dataBytes[0] = "0";
+        dataBytes[1] = "x";
+        for (uint256 i = 0; i < 20; i++) {
+            dataBytes[2 + i * 2] = alphabet[uint8(uint160(addr) / (16 ** (39 - i * 2)) & 0xf)];
+            dataBytes[3 + i * 2] = alphabet[uint8(uint160(addr) / (16 ** (38 - i * 2)) & 0xf)];
+        }
+        return string(dataBytes);
+    }
+
+    function uint2str(uint256 v) internal pure returns (string memory) {
+        if (v == 0) {
+            return "0";
+        }
         uint256 temp = v;
         uint256 digits;
         while (temp != 0) {
@@ -483,18 +326,5 @@ contract ChainQuiz is
             v /= 10;
         }
         return string(buffer);
-    }
-
-    function _toHexString(address account) internal pure returns (string memory) {
-        bytes20 data = bytes20(account);
-        bytes memory hexAlphabet = "0123456789abcdef";
-        bytes memory str = new bytes(42);
-        str[0] = "0";
-        str[1] = "x";
-        for (uint256 i = 0; i < 20; i++) {
-            str[2 + (i * 2)]     = hexAlphabet[uint8(data[i] >> 4)];
-            str[3 + (i * 2)]     = hexAlphabet[uint8(data[i] & 0x0f)];
-        }
-        return string(str);
     }
 }
