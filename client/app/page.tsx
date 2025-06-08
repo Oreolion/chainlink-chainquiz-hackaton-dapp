@@ -60,6 +60,7 @@ export default function Home() {
   const [isMounted, setIsMounted] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>("");
   const [isLoading, setIsLoading] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string>("");
   const [domains, setDomains] = useState<string[]>([]);
   const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
   const [quizId, setQuizId] = useState<string>("");
@@ -98,31 +99,45 @@ export default function Home() {
   // Memoized handlers to optimize event subscriptions
   const eventHandlers = useMemo(
     () => ({
-      onQuizGenerated: (player: string, qId: string, numQ: number) => {
-        if (player.toLowerCase() !== address?.toLowerCase()) return;
-        setQuizId(qId);
-        axios
-          .post(
-            `${process.env.NEXT_PUBLIC_ELIZAOS_URL || "http://localhost:5000"}/generateQuiz`,
-            { domains: selectedDomains, playerAddress: address }
-          )
-          .then((resp) => {
-            if (!resp.data || !Array.isArray(resp.data.questions)) {
-              console.error("Invalid questions format:", resp.data);
-              setQuestions([]);
-              setEntryState("idle");
-              return;
-            }
-            setQuestions(resp.data.questions);
-            setEntryState("inQuiz");
-            setTimer(45);
-          })
-          .catch((err) => {
-            console.error("Error fetching questions:", err);
-            setQuestions([]);
-            setEntryState("idle");
-          });
-      },
+     onQuizGenerated: (player: string, qId: string, numQ: number) => {
+  console.log("State before:", { entryState, questions, quizId });
+  if (player.toLowerCase() !== address?.toLowerCase()) return;
+  console.log("QuizGenerated event:", { player, qId, numQ });
+  setQuizId(qId);
+  setIsLoading(true);
+  const apiUrl = process.env.NEXT_PUBLIC_ELIZAOS_URL || "http://localhost:5000";
+  console.log("Fetching questions from:", `${apiUrl}/generateQuiz`, { domains: selectedDomains, playerAddress: address });
+  axios
+    .post(`${apiUrl}/generateQuiz`, { domains: selectedDomains, playerAddress: address })
+    .then((resp) => {
+      console.log("API response:", resp.data);
+      console.log("State after API:", { entryState, questions, quizId });
+      if (!resp.data || !Array.isArray(resp.data.questions)) {
+        console.error("Invalid questions format:", resp.data);
+        setErrorMessage("Failed to load questions. Invalid response from server.");
+        // toast.error("Failed to load quiz questions. Please try again.");
+        setQuestions([]);
+        setEntryState("idle");
+        return;
+      }
+      setQuestions(resp.data.questions);
+      setEntryState("inQuiz");
+      setTimer(45);
+      setErrorMessage("");
+      console.log("State after success:", { entryState, questions, quizId });
+    })
+    .catch((err) => {
+      console.error("Error fetching questions:", err.message, err.response?.data);
+      setErrorMessage("Failed to load questions. Server error or not running.");
+    //   toast.error("Error connecting to quiz server. Please try again.");
+      setQuestions([]);
+      setEntryState("idle");
+      console.log("State after error:", { entryState, questions, quizId });
+    })
+    .finally(() => {
+      setIsLoading(false);
+    });
+},
       onAnswerSubmitted: (player: string, isCorrect: boolean, questionIndex: number) => {
         if (player.toLowerCase() !== address?.toLowerCase()) return;
         const nextIndex = currentIndex + 1;
@@ -385,7 +400,7 @@ export default function Home() {
           {isConnected && (
             <div className="flex justify-end gap-4">
               <p className="text-sm text-gray-500 truncate max-w-[12rem]">{address}</p>
-              <p className="text-sm text-blue-500">{balance} $QUIZ</p>
+              <p className="text-sm text-blue-500">{balance} $QUIZ?TOKEN</p>
             </div>
           )}
 

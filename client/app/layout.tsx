@@ -17,12 +17,12 @@ const geistMono = Geist_Mono({
 
 export const metadata: Metadata = {
   title: "ChainQuiz App",
-  description: "Interact with ChainQuiz and QuizToken on Base Sepolia",
+  description: "Learn to Earn, Interact with ChainQuiz and QuizToken on Base Sepolia",
 };
 
-export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  const cookie = headers().get("cookie") ?? undefined;
-
+export default async  function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
+   const hdrs = await headers();
+  const cookie = hdrs.get("cookie") ?? "";
   return (
     <html lang="en">
       <body className={`${geistSans.variable} ${geistMono.variable} antialiased`}>

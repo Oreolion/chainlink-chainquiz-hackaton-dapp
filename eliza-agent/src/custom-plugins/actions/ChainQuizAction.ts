@@ -55,7 +55,7 @@ export class ChainQuizAction {
     // **Secrets slot & version from DON** (e.g. "42|1"):
     const donHostedSecretsSlotID: number = Number(process.env.DON_SLOT_ID);
     const donHostedSecretsVersion: number = Number(
-      process.env.DON_SLOT_VERSION
+      process.env.DON_HOSTED_SECRETS_VERSION
     );
     // Chainlink Functions Job IDs (GenerateQuiz + VerifyAnswer)
     const jobIdGen = process.env.JOBID_GEN as string; // e.g. "0xabc123..."
@@ -70,7 +70,7 @@ export class ChainQuizAction {
       !jobIdVer
     ) {
       throw new Error(
-        "Missing one of: CONTRACT_ADDRESS, DON_SLOT_ID, DON_SLOT_VERSION, JOBID_GEN, or JOBID_VER"
+        "Missing one of: CONTRACT_ADDRESS, DON_SLOT_ID, DON_HOSTED_SECRETS_VERSION, JOBID_GEN, or JOBID_VER"
       );
     }
 
