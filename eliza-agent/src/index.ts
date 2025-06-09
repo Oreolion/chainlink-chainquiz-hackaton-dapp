@@ -8,7 +8,7 @@ import {
 } from "@elizaos/core";
 import { bootstrapPlugin } from "@elizaos/plugin-bootstrap";
 import { createNodePlugin } from "@elizaos/plugin-node";
-import { getGiftPlugin } from "./custom-plugins/index.ts";
+import { ChainQuizPlugin } from "./custom-plugins/index.ts";
 import { evmPlugin } from "@elizaos/plugin-evm";
 import fs from "fs";
 import net from "net";
@@ -17,7 +17,7 @@ import { fileURLToPath } from "url";
 import { initializeDbCache } from "./cache/index.ts";
 import { character } from "./character.ts";
 import { startChat } from "./chat/index.ts";
-import { initializeClients } from "./clients/index.ts";
+// import { initializeClients } from "./clients/index.ts";
 import {
   getTokenForProvider,
   loadCharacters,
@@ -59,7 +59,7 @@ export function createAgent(
     plugins: [
       bootstrapPlugin,
       nodePlugin,
-      getGiftPlugin,
+      ChainQuizPlugin,
       evmPlugin,
     ].filter(Boolean),
     providers: [],
@@ -95,7 +95,7 @@ async function startAgent(character: Character, directClient: DirectClient) {
 
     await runtime.initialize();
 
-    runtime.clients = await initializeClients(character, runtime);
+    // runtime.clients = await initializeClients(character, runtime);
 
     directClient.registerAgent(runtime);
 
@@ -134,7 +134,7 @@ const checkPortAvailable = (port: number): Promise<boolean> => {
 
 const startAgents = async () => {
   const directClient = new DirectClient();
-  let serverPort = parseInt(settings.SERVER_PORT || "3000");
+  let serverPort = parseInt(settings.SERVER_PORT || "5000");
   const args = parseArguments();
 
   let charactersArg = args.characters || args.character;
@@ -166,7 +166,7 @@ const startAgents = async () => {
 
   directClient.start(serverPort);
 
-  if (serverPort !== parseInt(settings.SERVER_PORT || "3000")) {
+  if (serverPort !== parseInt(settings.SERVER_PORT || "5000")) {
     elizaLogger.log(`Server started on alternate port ${serverPort}`);
   }
 

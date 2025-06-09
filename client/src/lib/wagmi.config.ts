@@ -1,10 +1,10 @@
 import { http, createConfig } from "wagmi";
 import { baseSepolia } from "wagmi/chains";
-import { metaMask } from "wagmi/connectors";
+import { injected, metaMask, safe } from "wagmi/connectors";
 
 export const config = createConfig({
   chains: [baseSepolia],
-  connectors: [metaMask()],
+  connectors: [injected(), metaMask(), safe()],
   transports: {
     [baseSepolia.id]: http("https://sepolia.base.org"), // Base Sepolia RPC
   },

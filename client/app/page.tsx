@@ -98,108 +98,88 @@ export default function Home() {
 
   // Memoized handlers to optimize event subscriptions
   const eventHandlers = useMemo(
-    () => ({
-     onQuizGenerated: (player: string, qId: string, numQ: number) => {
-  console.log("State before:", { entryState, questions, quizId });
-  if (player.toLowerCase() !== address?.toLowerCase()) return;
-  console.log("QuizGenerated event:", { player, qId, numQ });
-  setQuizId(qId);
-  setIsLoading(true);
-  const apiUrl = process.env.NEXT_PUBLIC_ELIZAOS_URL || "http://localhost:5000";
-  console.log("Fetching questions from:", `${apiUrl}/generateQuiz`, { domains: selectedDomains, playerAddress: address });
-  axios
-    .post(`${apiUrl}/generateQuiz`, { domains: selectedDomains, playerAddress: address })
-    .then((resp) => {
-      console.log("API response:", resp.data);
-      console.log("State after API:", { entryState, questions, quizId });
-      if (!resp.data || !Array.isArray(resp.data.questions)) {
-        console.error("Invalid questions format:", resp.data);
-        setErrorMessage("Failed to load questions. Invalid response from server.");
-        // toast.error("Failed to load quiz questions. Please try again.");
-        setQuestions([]);
-        setEntryState("idle");
-        return;
-      }
-      setQuestions(resp.data.questions);
-      setEntryState("inQuiz");
-      setTimer(45);
-      setErrorMessage("");
-      console.log("State after success:", { entryState, questions, quizId });
-    })
-    .catch((err) => {
-      console.error("Error fetching questions:", err.message, err.response?.data);
-      setErrorMessage("Failed to load questions. Server error or not running.");
-    //   toast.error("Error connecting to quiz server. Please try again.");
-      setQuestions([]);
-      setEntryState("idle");
-      console.log("State after error:", { entryState, questions, quizId });
-    })
-    .finally(() => {
-      setIsLoading(false);
-    });
-},
-      onAnswerSubmitted: (player: string, isCorrect: boolean, questionIndex: number) => {
-        if (player.toLowerCase() !== address?.toLowerCase()) return;
-        const nextIndex = currentIndex + 1;
-        if (nextIndex < questions.length) {
-          setCurrentIndex(nextIndex);
-          setTimer(45);
-          setEntryState("inQuiz");
-        } else {
-          setEntryState("awaitingAnswer");
-        }
-      },
-      onQuizCompleted: (player: string, correctCount: number) => {
-        if (player.toLowerCase() !== address?.toLowerCase()) return;
-        tokenContract?.read
-          .balanceOf(address!)
-          .then((bal) => setBalance(formatEther(bal)))
-          .catch((err) => console.error("Balance update error:", err));
-        setEntryState("idle");
-        setReward(`${correctCount * 2}`);
-      },
-      onBonusAwarded: (player: string, bonus: bigint) => {
-        if (player.toLowerCase() !== address?.toLowerCase()) return;
-        tokenContract?.read
-          .balanceOf(address!)
-          .then((bal) => setBalance(formatEther(bal)))
-          .catch((err) => console.error("Balance update error:", err));
-        alert(`🎉 Bonus awarded: ${formatEther(bonus)} $QUIZ!`);
-      },
-      onLeaderboardRefreshed: (timestamp: bigint) => {
-        fetchLeaderboard();
-      },
-      onQuizCancelled: (player: string, refund: bigint) => {
-        if (player.toLowerCase() !== address?.toLowerCase()) return;
-        tokenContract?.read
-          .balanceOf(address!)
-          .then((bal) => setBalance(formatEther(bal)))
-          .catch((err) => console.error("Balance update error:", err));
-        alert(`✅ Quiz cancelled. Refunded ${formatEther(refund)} $QUIZ.`);
-        setEntryState("idle");
-      },
-    }),
-    [address, selectedDomains, currentIndex, questions.length, tokenContract, fetchLeaderboard]
-  );
+  () => ({
+    onQuizGenerated: (player: string, qId: string, numQ: number) => {
+      console.log("QuizGenerated event:", { player, qId, numQ, selectedDomains }); // Log domains
+      if (player.toLowerCase() !== address?.toLowerCase()) return;
+      setQuizId(qId);
+      setIsLoading(true);
+      const apiUrl = process.env.NEXT_PUBLIC_ELIZAOS_URL || "http://localhost:5000";
+      console.log("Fetching quiz from:", `${apiUrl}/generateQuiz`, { domains: selectedDomains, playerAddress: address });
+      axios
+        .post(`${apiUrl}/generateQuiz`, { domains: selectedDomains, playerAddress: address })
+        .then((resp) => {
+          console.log("API response:", resp.data);
+          // Update to match eliza-server.js response
+          if (!resp.data.quizId || typeof resp.data.numQuestions !== "number") {
+            console.error("Invalid quiz response:", resp.data);
+            setErrorMessage("Failed to load quiz. Invalid response from server.");
+            setEntryState("idle");
+            return;
+          }
+          // Fetch questions from Supabase
+          supabase
+            .from("Quizzes")
+            .select("questions")
+            .eq("quiz_id", resp.data.quizId)
+            .single()
+            .then(({ data, error }) => {
+              if (error) throw error;
+              if (!data.questions || !Array.isArray(data.questions)) {
+                throw new Error("Invalid questions format from Supabase");
+              }
+              setQuestions(data.questions);
+              setEntryState("inQuiz");
+              setTimer(45);
+              setErrorMessage("");
+              console.log("Quiz loaded:", { quizId: qId, numQuestions: numQ, questions: data.questions });
+            })
+            .catch((err) => {
+              console.error("Supabase error:", err.message);
+              setErrorMessage("Failed to load questions from database.");
+              setEntryState("idle");
+            });
+        })
+        .catch((err) => {
+          console.error("Error fetching quiz:", err.message, err.response?.data);
+          setErrorMessage("Failed to connect to quiz server.");
+          setEntryState("idle");
+        })
+        .finally(() => {
+          setIsLoading(false);
+        });
+    },
+    // ... (other handlers unchanged)
+  }),
+  [address, selectedDomains, tokenContract, fetchLeaderboard]
+);
 
   // Other callback hooks (always called)
   const startQuiz = useCallback(async () => {
-    if (!quizContract || !tokenContract || selectedDomains.length < 5) return;
-    setEntryState("staking");
-    setIsLoading(true);
-    try {
-      const chainQuizAddress = process.env.NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
-      if (!chainQuizAddress) throw new Error("ChainQuiz contract address is not defined");
-      const entryFee = BigInt(process.env.NEXT_PUBLIC_ENTRY_FEE_IN_QUIZ || "10000000000000000000");
-      await tokenContract.write.approve([chainQuizAddress, entryFee]);
-      await quizContract.write.startQuiz(selectedDomains);
-    } catch (err) {
-      console.error("startQuiz error:", err);
-      setEntryState("idle");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [quizContract, tokenContract, selectedDomains]);
+  if (!quizContract || !tokenContract || selectedDomains.length < 5) {
+    console.error("startQuiz: Invalid input", { selectedDomains, quizContract: !!quizContract, tokenContract: !!tokenContract });
+    return;
+  }
+  console.log("startQuiz: Initiating with domains", selectedDomains); // Log domains
+  setEntryState("staking");
+  setIsLoading(true);
+  try {
+    const chainQuizAddress = process.env.NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
+    if (!chainQuizAddress) throw new Error("ChainQuiz contract address is not defined");
+    const entryFee = BigInt(process.env.NEXT_PUBLIC_ENTRY_FEE_IN_QUIZ || "10000000000000000000");
+    console.log("Approving tokens:", { chainQuizAddress, entryFee: entryFee.toString() });
+    await tokenContract.write.approve([chainQuizAddress, entryFee]);
+    console.log("Calling startQuiz with domains:", selectedDomains);
+    await quizContract.write.startQuiz([selectedDomains]); // Ensure array wrapping
+    console.log("startQuiz: Transaction sent successfully");
+  } catch (err) {
+    console.error("startQuiz error:", err.message, err);
+    setErrorMessage(`Failed to start quiz: ${err.message}`);
+    setEntryState("idle");
+  } finally {
+    setIsLoading(false);
+  }
+}, [quizContract, tokenContract, selectedDomains]);
 
   const submitAnswer = useCallback(
     async (selectedIndex: number) => {

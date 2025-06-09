@@ -12,7 +12,7 @@
  *   OPENAI_API_KEY=<your openai key>
  */
 
-import dotenv from 'dotenv';
+import dotenv from "dotenv";
 dotenv.config();
 import express from "express";
 import bodyParser from "body-parser";
@@ -22,12 +22,12 @@ import OpenAI from "openai";
 // 1) Initialize Supabase
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_ANON_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
 // 2) Initialize OpenAI
 const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
 const app = express();
@@ -103,35 +103,38 @@ ${JSON.stringify(domains)}
 app.post("/generateQuiz", async (req, res) => {
   try {
     const { domains, playerAddress } = req.body;
-    if (!Array.isArray(domains) || domains.length < 5) {
-      return res.status(400).json({ error: "domains array must have 5+ entries" });
+    if (
+      !Array.isArray(domains) ||
+      domains.length < 5 ||
+      typeof playerAddress !== "string"
+    ) {
+      return res
+        .status(400)
+        .json({
+          error: "Invalid input: 5+ domains and playerAddress required",
+        });
     }
-
-    // 1) Generate questions with OpenAI
+    console.log("generateQuiz: Processing", { domains, playerAddress }); // Log input
     const questions = await generateQuestions(domains);
-
-    // 2) Unique quizId
     const quizId = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-
-    // 3) Insert into Supabase
-    const { error: supaErr } = await supabase
+    const { data, error: supaErr } = await supabase
       .from("Quizzes")
       .insert([
         {
           quiz_id: quizId,
-          player_address: playerAddress,
+          player_address: playerAddress.toLowerCase(), // Normalize address
           questions,
           started_at: new Date().toISOString(),
           correct_count: 0,
           completed_at: null,
         },
-      ]);
+      ])
+      .select("quiz_id, num_questions"); // Return inserted data
     if (supaErr) throw supaErr;
-
-    // 4) Return quizId & numQuestions
+    console.log("Supabase insert success:", data);
     res.json({ quizId, numQuestions: 10 });
   } catch (error) {
-    console.error("/generateQuiz error:", error);
+    console.error("/generateQuiz error:", error.message, error);
     res.status(500).json({ error: error.message });
   }
 });

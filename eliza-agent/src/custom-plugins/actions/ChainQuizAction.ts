@@ -22,137 +22,75 @@ import {
   type Memory,
   type State,
 } from "@elizaos/core";
-
 import { initWalletProvider, WalletProvider } from "../providers/wallet.ts";
 import type { QuizParams, Transaction } from "../types/index.ts";
 import { chainQuizTemplate } from "../templates/index.ts";
-import ChainQuizJson from "../artifacts/ChainQuiz.json" assert { type: "json" };
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 
-/**
- * Class representing the ChainQuizAction.
- */
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load ChainQuiz.json
+const ChainQuizJson = JSON.parse(fs.readFileSync(path.join(__dirname, "../artifacts/ChainQuiz.json"), "utf-8"));
+
 export class ChainQuizAction {
-  /**
-   * Creates an instance of ChainQuizAction.
-   * @param {WalletProvider} walletProvider - The wallet provider instance.
-   */
   constructor(private walletProvider: WalletProvider) {}
 
-  /**
-   * Calls `startQuiz` on the ChainQuiz contract.
-   * @param {QuizParams} params - The parameters for starting a quiz.
-   * @returns {Promise<Transaction>} The transaction details.
-   * @throws Will throw an error if contract address, secrets slot, version,
-   *         or Job IDs are not set.
-   */
   async startQuiz(params: QuizParams): Promise<Transaction> {
-    // You must supply these via environment or a config file:
     const chainName = "baseSepolia";
-
-    // **Fill in your actual deployed contract address here**:
-    const contractAddress: `0x${string}` = process.env
-      .CHAINQUIZ_ADDRESS as `0x${string}`;
-    // **Secrets slot & version from DON** (e.g. "42|1"):
+    const contractAddress: `0x${string}` = process.env.CHAINQUIZ_ADDRESS as `0x${string}`;
     const donHostedSecretsSlotID: number = Number(process.env.DON_SLOT_ID);
-    const donHostedSecretsVersion: number = Number(
-      process.env.DON_HOSTED_SECRETS_VERSION
-    );
-    // Chainlink Functions Job IDs (GenerateQuiz + VerifyAnswer)
-    const jobIdGen = process.env.JOBID_GEN as string; // e.g. "0xabc123..."
-    const jobIdVer = process.env.JOBID_VER as string; // e.g. "0xdef456..."
+    const donHostedSecretsVersion: number = Number(process.env.DON_HOSTED_SECRETS_VERSION);
+    const jobIdGen = process.env.JOBID_GEN as string;
+    const jobIdVer = process.env.JOBID_VER as string;
 
-    // Validate that everything is set
-    if (
-      !contractAddress ||
-      !donHostedSecretsSlotID ||
-      !donHostedSecretsVersion ||
-      !jobIdGen ||
-      !jobIdVer
-    ) {
-      throw new Error(
-        "Missing one of: CONTRACT_ADDRESS, DON_SLOT_ID, DON_HOSTED_SECRETS_VERSION, JOBID_GEN, or JOBID_VER"
-      );
+    if (!contractAddress || !donHostedSecretsSlotID || !donHostedSecretsVersion || !jobIdGen || !jobIdVer) {
+      throw new Error("Missing one of: CONTRACT_ADDRESS, DON_SLOT_ID, DON_HOSTED_SECRETS_VERSION, JOBID_GEN, or JOBID_VER");
     }
 
-    console.log(
-      `🔔 Starting quiz for domains [${params.domains.join(
-        ", "
-      )}] with player address: ${params.playerAddress}`
-    );
+    console.log(`🔔 Starting quiz for domains [${params.domains.join(", ")}] with player address: ${params.playerAddress}`);
 
-    // 1) Switch to Base Sepolia
     this.walletProvider.switchChain(chainName);
     const walletClient = this.walletProvider.getWalletClient(chainName);
 
     try {
-      // 2) Build the viem Contract instance
-      const { abi } = (ChainQuizJson as any).contracts[
-        "ChainQuiz.sol:ChainQuiz"
-      ];
+      const { abi } = (ChainQuizJson as any).contracts["ChainQuiz.sol:ChainQuiz"];
       const chainQuizContract = getContract({
         address: contractAddress,
         abi,
         client: walletClient,
       });
 
-      // 3) Build the arguments for startQuiz:
-      //    args = [
-      //      [ "DeFi", "NFT", ... ],      // domains[] array
-      //      jobIdGen,                   // Job ID for GenerateQuiz
-      //      `${donHostedSecretsSlotID}|${donHostedSecretsVersion}`,
-      //      params.playerAddress
-      //    ]
-      //
-      //    Note: Your on‐chain function `_generateSource()` expects args[0] = JSON(domains), args[1] = playerAddress, etc.
-      //    But in our `ChainQuiz.sol`, we hardcoded secrets via `_toHexString(msg.sender)` etc. Double‐check your contract’s `startQuiz` signature.
-      //    Assuming it’s: `function startQuiz(string[] calldata domains) external`
-      //
-      //    We just call startQuiz(domains). The contract itself constructs the Functions request.
-      //
-      // 4) We need to stake 10 $QUIZ first. That means:
-      //    a) Approve `entryFee` (10 * 10^18) to the ChainQuiz contract.
-      //    b) Call `startQuiz(domains)`.
-      //
-      // 5) Return a consolidated Transaction object.
-
-      // a) Approve 10 $QUIZ
-      const entryFee = BigInt(parseEther("10")); // 10 * 10^18
+      const entryFee = BigInt(parseEther("10"));
       const quizTokenAddress = process.env.QUIZTOKEN_ADDRESS as `0x${string}`;
 
-      // Build a viem write to the $QUIZ token’s `approve(...)`
       const approveTxHash = await walletClient.writeContract({
         address: quizTokenAddress,
         abi: (ChainQuizJson as any).contracts["QuizToken.sol:QuizToken"].abi,
         functionName: "approve",
-        chain: undefined, // or specify your chain object if needed
+        chain: undefined,
         account: walletClient.account ?? null,
         args: [contractAddress, entryFee],
       });
 
-      // b) Call startQuiz(domains)
       console.log("ChainQuizParams:", params);
-      console.assert(
-        Array.isArray(params.domains) && params.domains.length >= 5,
-        "domains must be an array of length ≥ 5"
-      );
-      console.assert(
-        typeof params.playerAddress === "string" &&
-          params.playerAddress.startsWith("0x") &&
-          params.playerAddress.length === 42,
-        "playerAddress must be a 42-char hex string"
-      );
+      console.assert(Array.isArray(params.domains) && params.domains.length >= 5, "domains must be an array of length ≥ 5");
+      console.assert(typeof params.playerAddress === "string" && params.playerAddress.startsWith("0x") && params.playerAddress.length === 42, "playerAddress must be a 42-char hex string");
 
-      const hash = await chainQuizContract.write.startQuiz(
-        [params.domains],
-        {}
-      );
+      const hash = await chainQuizContract.write.startQuiz([params.domains], {
+        gas: BigInt(3_000_000),
+        account: walletClient.account!,
+        chain: walletClient.chain ?? null,
+      });
 
       return {
         hash,
         from: walletClient.account!.address,
         to: contractAddress,
-        value: parseEther("0"), // no ETH value
-        data: "0x", // (we could do `chainQuizContract.interface.encodeFunctionData("startQuiz", [params.domains])`)
+        value: parseEther("0"),
+        data: "0x",
       };
     } catch (error) {
       if (error instanceof Error) {

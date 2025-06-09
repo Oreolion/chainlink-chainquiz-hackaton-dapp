@@ -26,3 +26,9 @@ QUIZTOKEN_ADDRESS=
 CHAINQUIZ_ADDRESS=
 DON_SLOT_ID=
 DON_SLOT_VERSION=
+
+
+
+check Eliza result in termonal
+`$ curl -X POST http://localhost:5000/generateQuiz -H "Content-Type: application/json" -d '{"domains":["DeFi","NFT","Layer2","DAOs","Governance"],"playerAddress":"0x50F9c0C82C49B0E4c43ca97016C29dfd3F4A18c7"}'
+`
