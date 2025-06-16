@@ -16,4 +16,3 @@ export const ChainQuizPlugin: Plugin = {
 
 };
 
-export default ChainQuizPlugin;
