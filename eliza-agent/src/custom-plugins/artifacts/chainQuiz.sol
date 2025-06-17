@@ -86,7 +86,12 @@ contract ChainQuiz is FunctionsClient, ConfirmedOwner, ReentrancyGuard {
             "DAOs",
             "SmartContracts",
             "WalletSecurity",
-            "Stablecoins"
+            "Stablecoins",
+            "Chainlink",
+            "CCIP",
+            "VRF",
+            "Automation",
+            "DataFeeds"
         ];
     }
 

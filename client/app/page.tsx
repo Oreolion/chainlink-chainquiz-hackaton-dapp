@@ -1,12 +1,13 @@
 "use client";
 
-import { Component, useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { Component, useEffect, useState, useRef, useCallback } from "react";
 import { useAccount, usePublicClient, useWatchContractEvent } from "wagmi";
 import { useQuizToken } from "../src/hooks/useQuizToken";
 import { useChainQuiz } from "../src/hooks/useChainQuiz";
 import axios from "axios";
 import { supabase } from "../src/utils/supabaseClient";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
+import ChainQuizABI from "../src/abis/ChainQuizABI.json";
 import { formatEther, isAddress } from "viem";
 import type { Address } from "viem";
 
@@ -56,6 +57,7 @@ export default function Home() {
   const publicClient = usePublicClient();
   const quizContract = useChainQuiz();
   const tokenContract = useQuizToken();
+  const diffMap = { Easy: 0, Medium: 1, Hard: 2 } as const;
 
   // State
   const [isMounted, setIsMounted] = useState(false);
@@ -366,85 +368,17 @@ export default function Home() {
         return;
       }
       setVrfRequestId(requestId);
+      quizContract!.write.checkVRFAndGenerateQuiz(Number(requestId));
     },
-    [address]
+    [address, quizContract]
   );
 
   // Event Subscriptions
   const chainQuizAddress = process.env.NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
-  const chainQuizAbi = [
-    {
-      name: "QuizGenerated",
-      type: "event",
-      inputs: [
-        { name: "player", type: "address", indexed: true },
-        { name: "quizId", type: "string", indexed: true },
-        { name: "numQuestions", type: "uint8", indexed: false },
-      ],
-    },
-    {
-      name: "AnswerSubmitted",
-      type: "event",
-      inputs: [
-        { name: "player", type: "address", indexed: true },
-        { name: "quizId", type: "string", indexed: true },
-        { name: "isCorrect", type: "bool", indexed: false },
-        { name: "questionIndex", type: "uint8", indexed: false },
-      ],
-    },
-    {
-      name: "QuizCompleted",
-      type: "event",
-      inputs: [
-        { name: "player", type: "address", indexed: true },
-        { name: "quizId", type: "string", indexed: false },
-        { name: "correctCount", type: "uint8", indexed: false },
-      ],
-    },
-    {
-      name: "BonusAwarded",
-      type: "event",
-      inputs: [
-        { name: "player", type: "address", indexed: true },
-        { name: "quizId", type: "string", indexed: true },
-        { name: "amount", type: "uint256", indexed: false },
-      ],
-    },
-    {
-      name: "LeaderboardRefreshed",
-      type: "event",
-      inputs: [],
-    },
-    {
-      name: "QuizCancelled",
-      type: "event",
-      inputs: [
-        { name: "player", type: "address", indexed: true },
-        { name: "quizId", type: "string", indexed: true },
-        { name: "refundAmount", type: "uint256", indexed: false },
-      ],
-    },
-    {
-      name: "VRFRequestInitiated",
-      type: "event",
-      inputs: [
-        { name: "requestId", type: "uint256", indexed: true },
-        { name: "player", type: "address", indexed: true },
-      ],
-    },
-    {
-      name: "FunctionsRequestInitiated",
-      type: "event",
-      inputs: [
-        { name: "requestId", type: "bytes32", indexed: true },
-        { name: "player", type: "address", indexed: true },
-      ],
-    },
-  ];
 
   useWatchContractEvent({
     address: chainQuizAddress,
-    abi: chainQuizAbi,
+    abi: ChainQuizABI,
     eventName: "QuizGenerated",
     onLogs: onQuizGenerated,
     enabled: !!quizContract && !!address && status === "connected",
@@ -452,7 +386,7 @@ export default function Home() {
 
   useWatchContractEvent({
     address: chainQuizAddress,
-    abi: chainQuizAbi,
+    abi: ChainQuizABI,
     eventName: "AnswerSubmitted",
     onLogs: onAnswerSubmitted,
     enabled: !!quizContract && !!address && status === "connected",
@@ -460,7 +394,7 @@ export default function Home() {
 
   useWatchContractEvent({
     address: chainQuizAddress,
-    abi: chainQuizAbi,
+    abi: ChainQuizABI,
     eventName: "QuizCompleted",
     onLogs: onQuizCompleted,
     enabled: !!quizContract && !!address && status === "connected",
@@ -468,7 +402,7 @@ export default function Home() {
 
   useWatchContractEvent({
     address: chainQuizAddress,
-    abi: chainQuizAbi,
+    abi: ChainQuizABI,
     eventName: "BonusAwarded",
     onLogs: onBonusAwarded,
     enabled: !!quizContract && !!address && status === "connected",
@@ -476,7 +410,7 @@ export default function Home() {
 
   useWatchContractEvent({
     address: chainQuizAddress,
-    abi: chainQuizAbi,
+    abi: ChainQuizABI,
     eventName: "LeaderboardRefreshed",
     onLogs: onLeaderboardRefreshed,
     enabled: !!quizContract && !!address && status === "connected",
@@ -484,7 +418,7 @@ export default function Home() {
 
   useWatchContractEvent({
     address: chainQuizAddress,
-    abi: chainQuizAbi,
+    abi: ChainQuizABI,
     eventName: "QuizCancelled",
     onLogs: onQuizCancelled,
     enabled: !!quizContract && !!address && status === "connected",
@@ -492,68 +426,62 @@ export default function Home() {
 
   useWatchContractEvent({
     address: chainQuizAddress,
-    abi: chainQuizAbi,
+    abi: ChainQuizABI,
     eventName: "VRFRequestInitiated",
     onLogs: onVRFRequestInitiated,
-    enabled: !!quizContract && !!address && status === "connected",
+    enabled: !!quizContract && !!address && status === "connected",    
   });
 
   // Start Quiz
   const startQuiz = useCallback(async () => {
+    // 1️⃣ Basic validation
     if (!quizContract || !tokenContract || selectedDomains.length < 5 || !address) {
-      console.error("startQuiz: Invalid input", {
-        selectedDomains,
-        quizContract: !!quizContract,
-        tokenContract: !!tokenContract,
-        address,
-        timestamp: new Date().toISOString(),
-      });
-      setErrorMessage("Select at least 5 domains and ensure wallet is connected.");
+      setErrorMessage("Select at least 5 domains, choose a difficulty & connect your wallet.");
       return;
     }
-    console.log("startQuiz: Initiating with domains", {
-      domains: selectedDomains,
-      playerAddress: address,
-      timestamp: new Date().toISOString(),
-    });
+    setErrorMessage("");
     setEntryState("staking");
     setIsLoading(true);
+
     try {
-      const chainQuizAddress = process.env
-        .NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
-      if (!chainQuizAddress) throw new Error("ChainQuiz contract address undefined");
-      const entryFee = BigInt(
-        process.env.NEXT_PUBLIC_ENTRY_FEE_IN_QUIZ || "10000000000000000000"
-      );
-      console.log("Approving tokens:", {
-        chainQuizAddress,
-        entryFee: entryFee.toString(),
-        timestamp: new Date().toISOString(),
+      // 2️⃣ Prepare params
+      const quizAddr = process.env.NEXT_PUBLIC_CHAINQUIZ_ADDRESS!;
+      const entryFee = BigInt(process.env.NEXT_PUBLIC_ENTRY_FEE_IN_QUIZ!);
+      const diffMap = { Easy: 0, Medium: 1, Hard: 2 } as const;
+      const diffIndex = diffMap[difficulty];
+
+      console.log("🚀 startQuiz → Approving token", { quizAddr, entryFee });
+      const approveHash = await tokenContract.write.approve([quizAddr, entryFee]);
+      console.log("✍️  Approve tx sent:", approveHash);
+
+      // 3️⃣ Wait for the approve to be mined
+      const receipt1 = await publicClient.waitForTransactionReceipt({ hash: approveHash });
+      console.log("✅ Approve confirmed:", {
+        status: receipt1.status,
+        gasUsed: receipt1.gasUsed.toString()
       });
-      const approveTxHash = await tokenContract.write.approve([
-        chainQuizAddress,
-        entryFee,
-      ]);
-      console.log("Approve tx hash:", approveTxHash);
-      console.log("Calling startQuiz on-chain with domains:", selectedDomains);
-      const startQuizTxHash = await quizContract.write.startQuiz(
-        selectedDomains,
-      );
-      console.log("startQuiz tx hash:", startQuizTxHash);
-      // Rely on event subscription for QuizGenerated
+
+      // 4️⃣ Call startQuiz with BOTH domains & difficulty
+      console.log("🚀 startQuiz → submitting on-chain", { selectedDomains, diffIndex });
+      const startHash = await quizContract.write.startQuiz(selectedDomains);
+      console.log("✍️  startQuiz tx sent:", startHash);
+
+      // all further UX updates will come via your on-chain event subscribers
     } catch (err: any) {
-      console.error("startQuiz error:", {
-        message: err.message,
-        error: err,
-        timestamp: new Date().toISOString(),
-      });
+      console.error("❌ startQuiz error:", err);
       setErrorMessage(`Failed to start quiz: ${err.message}`);
       setEntryState("idle");
     } finally {
       setIsLoading(false);
     }
-  }, [quizContract, tokenContract, selectedDomains, address]);
-
+  }, [
+    quizContract,
+    tokenContract,
+    publicClient,
+    selectedDomains,
+    difficulty,
+    address
+  ]);
 
   // Submit Answer
   const submitAnswer = useCallback(
@@ -646,29 +574,6 @@ export default function Home() {
             quizId,
             timestamp: new Date().toISOString(),
           });
-          const finishHash = await quizContract.write.finishQuiz();
-          console.log("submitAnswer: Finish quiz transaction sent", {
-            txHash: finishHash,
-            timestamp: new Date().toISOString(),
-          });
-          if (publicClient) {
-            console.log("submitAnswer: Waiting for finish quiz transaction", {
-              txHash: finishHash,
-              timestamp: new Date().toISOString(),
-            });
-            const receipt = await publicClient.waitForTransactionReceipt({
-              hash: finishHash,
-            });
-            console.log("submitAnswer: Finish quiz transaction confirmed", {
-              txHash: finishHash,
-              receipt: {
-                status: receipt.status,
-                gasUsed: receipt.gasUsed.toString(),
-                blockNumber: receipt.blockNumber.toString(),
-              },
-              timestamp: new Date().toISOString(),
-            });
-          }
         }
       } catch (err: any) {
         console.error("submitAnswer: Error", {
@@ -685,60 +590,6 @@ export default function Home() {
     },
     [quizContract, address, status, quizId, questions, currentIndex, publicClient]
   );
-
-  // Finish Quiz
-  const finishQuiz = useCallback(async () => {
-    if (!quizContract || !address || status !== "connected") {
-      console.error("finishQuiz: Invalid input", {
-        quizContract: !!quizContract,
-        address: !!address,
-        status,
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    }
-    console.log("finishQuiz: Starting", {
-      quizId,
-      timestamp: new Date().toISOString(),
-    });
-    setEntryState("awaitingAnswer");
-    setIsLoading(true);
-    try {
-      const finishHash = await quizContract.write.finishQuiz();
-      console.log("finishQuiz: Transaction sent", {
-        txHash: finishHash,
-        timestamp: new Date().toISOString(),
-      });
-      if (publicClient) {
-        console.log("finishQuiz: Waiting for transaction", {
-          txHash: finishHash,
-          timestamp: new Date().toISOString(),
-        });
-        const receipt = await publicClient.waitForTransactionReceipt({
-          hash: finishHash,
-        });
-        console.log("finishQuiz: Transaction confirmed", {
-          txHash: finishHash,
-          receipt: {
-            status: receipt.status,
-            gasUsed: receipt.gasUsed.toString(),
-            blockNumber: receipt.blockNumber.toString(),
-          },
-          timestamp: new Date().toISOString(),
-        });
-      }
-    } catch (err: any) {
-      console.error("finishQuiz: Error", {
-        message: err.message,
-        error: err,
-        timestamp: new Date().toISOString(),
-      });
-      setErrorMessage(`Failed to finish quiz: ${err.message}`);
-      setEntryState("idle");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [quizContract, address, status, quizId, publicClient]);
 
   // Request Random Challenge
   const requestChallenge = useCallback(async () => {
@@ -881,54 +732,54 @@ export default function Home() {
     ]);
   }, []);
 
-useEffect(() => {
-  const fetchBalance = async () => {
-    console.log("fetchBalance 📋", {
-      address,
-      status,
-      tokenContract: !!tokenContract,
-      isValidAddress: isAddress(address ?? ""),
-      timestamp: new Date().toISOString(),
-    });
-
-    // 1️⃣ Guard: address must be a string and valid EVM address
-    if (typeof address !== "string" || status !== "connected" || !tokenContract || !isAddress(address)) {
-      console.log("fetchBalance ⏭ skipping invalid input");
-      setBalance("0");
-      return;
-    }
-
-    try {
-      // 2️⃣ Call with a string, not an array!
-      //    TS error “`0x${string}`[] not assignable to string” goes away here.
-      const raw = await tokenContract.read.balanceOf(address as Address);
-
-      console.log("fetchBalance raw return:", {
-        typeofRaw: typeof raw,
-        raw,
+  useEffect(() => {
+    const fetchBalance = async () => {
+      console.log("fetchBalance 📋", {
+        address,
+        status,
+        tokenContract: !!tokenContract,
+        isValidAddress: isAddress(address ?? ""),
         timestamp: new Date().toISOString(),
       });
 
-      // 3️⃣ Normalize to bigint in case raw isn’t typed exactly
-      const bal: bigint =
-        typeof raw === "bigint" ? raw : BigInt(raw as unknown as string);
+      // 1️⃣ Guard: address must be a string and valid EVM address
+      if (typeof address !== "string" || status !== "connected" || !tokenContract || !isAddress(address)) {
+        console.log("fetchBalance ⏭ skipping invalid input");
+        setBalance("0");
+        return;
+      }
 
-      console.log("fetchBalance normalized bigint:", {
-        bal,
-        timestamp: new Date().toISOString(),
-      });
+      try {
+        // 2️⃣ Call with a string, not an array!
+        //    TS error “`0x${string}`[] not assignable to string” goes away here.
+        const raw = await tokenContract.read.balanceOf(address as Address);
 
-      // 4️⃣ Format & set
-      setBalance(formatEther(bal));
-      console.log("fetchBalance ✅ success", { balance: formatEther(bal) });
-    } catch (err: any) {
-      console.error("fetchBalance ❌ error", err);
-      setBalance("0");
-    }
-  };
+        console.log("fetchBalance raw return:", {
+          typeofRaw: typeof raw,
+          raw,
+          timestamp: new Date().toISOString(),
+        });
 
-  fetchBalance();
-}, [address, status, tokenContract]);
+        // 3️⃣ Normalize to bigint in case raw isn’t typed exactly
+        const bal: bigint =
+          typeof raw === "bigint" ? raw : BigInt(raw as unknown as string);
+
+        console.log("fetchBalance normalized bigint:", {
+          bal,
+          timestamp: new Date().toISOString(),
+        });
+
+        // 4️⃣ Format & set
+        setBalance(formatEther(bal));
+        console.log("fetchBalance ✅ success", { balance: formatEther(bal) });
+      } catch (err: any) {
+        console.error("fetchBalance ❌ error", err);
+        setBalance("0");
+      }
+    };
+
+    fetchBalance();
+  }, [address, status, tokenContract]);
 
   useEffect(() => {
     console.log("Leaderboard effect: Starting periodic fetch", {
@@ -1122,24 +973,13 @@ useEffect(() => {
             </div>
           )}
 
-          {/* Finish Quiz */}
+          {/* Quiz Completion */}
           {status === "connected" && address && entryState === "awaitingAnswer" && (
             <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4 text-center">
-              <h2 className="text-xl font-semibold text-gray-100">All questions answered!</h2>
-              <button
-                onClick={finishQuiz}
-                disabled={isLoading}
-                className="mt-2 w-full p-3 bg-blue-500 hover:bg-blue-600 rounded-xl text-lg font-semibold text-white disabled:bg-gray-600 disabled:cursor-not-allowed relative"
-              >
-                {isLoading && (
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
-                  </div>
-                )}
-                <span className={isLoading ? "opacity-0" : ""}>
-                  {reward === "" ? "Finish Quiz" : `You earned ${reward} QUIZ`}
-                </span>
-              </button>
+              <h2 className="text-xl font-semibold text-gray-100">Quiz Completed!</h2>
+              <p className="text-base text-gray-200">
+                You earned {reward || "0"} QUIZ
+              </p>
               <div className="flex justify-center gap-3 mt-3">
                 <button
                   onClick={requestChallenge}

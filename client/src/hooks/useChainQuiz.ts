@@ -91,11 +91,23 @@ export function useChainQuiz() {
           functionName: "requestRandomChallenge",
           args: [],
         }),
+      checkVRFAndGenerateQuiz: async (vrfRequestId: number) =>
+        writeContractAsync({
+          address: CHAIN_QUIZ_ADDRESS,
+          abi: ChainQuizABI,
+          functionName: "checkVRFAndGenerateQuiz",
+          args: [vrfRequestId],
+        }),
     },
     watch: {
       // Each watchContractEvent: add console logs inside onLogs, fix arg names
       onQuizGenerated: (
-        callback: (player: string, quizId: string, numQuestions: number, log: any) => void
+        callback: (
+          player: string,
+          quizId: string,
+          numQuestions: number,
+          log: any
+        ) => void
       ) =>
         publicClient.watchContractEvent({
           address: CHAIN_QUIZ_ADDRESS,
@@ -116,7 +128,12 @@ export function useChainQuiz() {
           },
         }),
       onAnswerSubmitted: (
-        callback: (player: string, isCorrect: boolean, questionIndex: number, log: any) => void
+        callback: (
+          player: string,
+          isCorrect: boolean,
+          questionIndex: number,
+          log: any
+        ) => void
       ) =>
         publicClient.watchContractEvent({
           address: CHAIN_QUIZ_ADDRESS,
