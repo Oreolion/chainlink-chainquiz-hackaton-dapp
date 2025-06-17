@@ -1,47 +1,29 @@
 "use client";
 
-import React, {
-  Component,
-  useEffect,
-  useState,
-  useRef,
-  useCallback,
-  useMemo,
-} from "react";
-import { useAccount } from "wagmi";
-import { useChainQuiz } from "../src/hooks/useChainQuiz";
+import { Component, useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { useAccount, usePublicClient, useWatchContractEvent } from "wagmi";
 import { useQuizToken } from "../src/hooks/useQuizToken";
+import { useChainQuiz } from "../src/hooks/useChainQuiz";
 import axios from "axios";
 import { supabase } from "../src/utils/supabaseClient";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import { formatEther } from "viem";
+import { formatEther, isAddress } from "viem";
+import type { Address } from "viem";
 
-// --- Define types for quiz questions and leaderboard entries ---
-interface QuizQuestion {
-  id: string;
-  domain: string;
-  text: string;
-  options: string[];
-  correctIndex: number;
-}
-
-interface LeaderboardEntry {
-  address: string;
-  score: number;
-}
-
-// Error Boundary Component
 class ErrorBoundary extends Component<
   { children: React.ReactNode },
   { hasError: boolean; error: Error | null }
 > {
   state = { hasError: false, error: null };
+
   static getDerivedStateFromError(error: Error) {
     return { hasError: true, error };
   }
+
   componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error("ErrorBoundary caught an error:", error, errorInfo);
   }
+
   render() {
     if (this.state.hasError) {
       return (
@@ -69,272 +51,454 @@ class ErrorBoundary extends Component<
 }
 
 export default function Home() {
-  // 1) Wallet & contract hooks
-  const { address, isConnected } = useAccount();
+  // Hooks
+  const { address, status } = useAccount();
+  const publicClient = usePublicClient();
   const quizContract = useChainQuiz();
   const tokenContract = useQuizToken();
 
-  // 2) UI state hooks with explicit generics
+  // State
   const [isMounted, setIsMounted] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<string>("");
   const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
-
   const [domains, setDomains] = useState<string[]>([]);
   const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
-
+  const [difficulty, setDifficulty] = useState<"Easy" | "Medium" | "Hard">("Medium");
   const [quizId, setQuizId] = useState<string>("");
-  const [questions, setQuestions] = useState<QuizQuestion[]>([]);
+  const [vrfRequestId, setVrfRequestId] = useState<string>("");
+  const [questions, setQuestions] = useState<any[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
-  // Timer for question
   const [timer, setTimer] = useState<number>(45);
-  // States: idle, staking, inQuiz, awaitingAnswer
-  type EntryState = "idle" | "staking" | "inQuiz" | "awaitingAnswer";
-  const [entryState, setEntryState] = useState<EntryState>("idle");
-
+  const [entryState, setEntryState] = useState<"idle" | "staking" | "inQuiz" | "awaitingAnswer">("idle");
   const [reward, setReward] = useState<string>("");
   const [balance, setBalance] = useState<string>("0");
-  const [leaderboard, setLeaderboard] = useState<LeaderboardEntry[]>([]);
+  const [leaderboard, setLeaderboard] = useState<{ address: string; score: number }[]>([]);
 
-  // Ref for timer: in browser, setTimeout returns number
-  const timerRef = useRef<number | null>(null);
+  const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 3) Fetch leaderboard from Supabase, typed
+  // Fetch leaderboard from Supabase
   const fetchLeaderboard = useCallback(async () => {
+    console.log("fetchLeaderboard: Starting", { timestamp: new Date().toISOString() });
     try {
       const { data, error } = await supabase
         .from("Quizzes")
         .select("player_address, correct_count")
-        .not("completed_at", "is", null);
-
+        .not("completed_at", "is", null)
+        .order("correct_count", { ascending: false })
+        .limit(5);
       if (error) throw error;
-      // data: array of rows with player_address and correct_count
-      const arr: LeaderboardEntry[] = data.map((row: any) => ({
+      console.log("fetchLeaderboard: Raw Supabase data", { data, timestamp: new Date().toISOString() });
+      const arr = data.map((row: any) => ({
         address: row.player_address,
         score: row.correct_count * 10,
       }));
-      arr.sort((a, b) => b.score - a.score);
-      console.log("Fetched leaderboard:", arr);
-      setLeaderboard(arr.slice(0, 5));
+      console.log("fetchLeaderboard: Success", { leaderboard: arr, timestamp: new Date().toISOString() });
+      setLeaderboard(arr);
       setLastUpdated(new Date().toLocaleTimeString());
-    } catch (err) {
-      console.error("Supabase error in fetchLeaderboard:", err);
+    } catch (err: any) {
+      console.error("fetchLeaderboard: Error", {
+        message: err.message,
+        error: err,
+        timestamp: new Date().toISOString(),
+      });
       setLeaderboard([]);
       setErrorMessage("Failed to load leaderboard.");
     }
   }, []);
 
-  // 4) Event handlers with explicit types
-  const eventHandlers = useMemo(
-    () => ({
-      onQuizGenerated: async (
-        player: string,
-        qId: string,
-        numQuestions: number,
-        log: any
-      ) => {
-        console.log("Event QuizGenerated fired. Args:", { player, qId, numQuestions, log });
-        if (!address) {
-          console.log("No address in context, ignoring QuizGenerated.");
-          return;
+  // Event Handlers
+  const onQuizGenerated = useCallback(
+    async (logs: any[]) => {
+      const event = logs[0];
+      const player: string = event.args.player;
+      const qId: string = event.args.quizId;
+      const numQ: number = Number(event.args.numQuestions);
+      console.log("onQuizGenerated: Event received", {
+        player,
+        quizId: qId,
+        numQuestions: numQ,
+        selectedDomains,
+        difficulty,
+        txHash: event.transactionHash,
+        blockNumber: Number(event.blockNumber),
+        timestamp: new Date().toISOString(),
+      });
+      if (player.toLowerCase() !== address?.toLowerCase()) {
+        console.log("onQuizGenerated: Skipping, player mismatch", {
+          player,
+          address,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      setQuizId(qId);
+      setIsLoading(true);
+      const apiUrl = process.env.NEXT_PUBLIC_ELIZAOS_URL || "http://localhost:5000";
+      try {
+        console.log("onQuizGenerated: Calling ELIZA agent", {
+          url: `${apiUrl}/generateQuiz`,
+          payload: { domains: selectedDomains, playerAddress: address, difficulty },
+          timestamp: new Date().toISOString(),
+        });
+        const resp = await axios.post(`${apiUrl}/generateQuiz`, {
+          domains: selectedDomains,
+          playerAddress: address,
+          difficulty,
+        });
+        console.log("onQuizGenerated: ELIZA agent response", {
+          quizId: resp.data.quizId,
+          numQuestions: resp.data.numQuestions,
+          status: resp.status,
+          response: resp.data,
+          timestamp: new Date().toISOString(),
+        });
+        if (!resp.data.quizId || typeof resp.data.numQuestions !== "number") {
+          throw new Error("Invalid quiz response: missing quizId or numQuestions");
         }
-        if (player.toLowerCase() !== address.toLowerCase()) {
-          console.log("QuizGenerated for different player, ignoring", player);
-          return;
+        console.log("onQuizGenerated: Fetching questions from Supabase", {
+          quizId: resp.data.quizId,
+          timestamp: new Date().toISOString(),
+        });
+        const { data, error } = await supabase
+          .from("Quizzes")
+          .select("questions")
+          .eq("quiz_id", resp.data.quizId)
+          .single();
+        if (error) {
+          console.error("onQuizGenerated: Supabase error", {
+            message: error.message,
+            details: error.details,
+            hint: error.hint,
+            timestamp: new Date().toISOString(),
+          });
+          throw error;
         }
-        // Now quizId matches current user, fetch questions
-        setQuizId(qId);
-        setIsLoading(true);
-        const apiUrl = process.env.NEXT_PUBLIC_ELIZAOS_URL || "http://localhost:5000";
-        try {
-          // **IMPORTANT**: if your architecture is that contract/Chainlink Function already inserted questions into Supabase under this quizId,
-          // you should not re-call `/generateQuiz`. Instead directly fetch from Supabase. Adjust as per your design.
-          console.log("Fetching questions from Supabase for quizId:", qId);
-          const { data, error } = await supabase
-            .from("Quizzes")
-            .select("questions")
-            .eq("quiz_id", qId)
-            .single();
-
-          if (error) throw error;
-          console.log("Supabase returned questions:", data.questions);
-          if (!data.questions || !Array.isArray(data.questions)) {
-            throw new Error("Invalid questions format from Supabase");
-          }
-          // Type assertion: ensure each question matches QuizQuestion shape
-          setQuestions(data.questions as QuizQuestion[]);
-          setEntryState("inQuiz");
-          setCurrentIndex(0);
-          setTimer(45);
-          setErrorMessage("");
-        } catch (err: any) {
-          console.error("Error in onQuizGenerated handling:", err.message || err, err.response?.data);
-          setErrorMessage(`Failed to load quiz questions: ${err.response?.data?.error || err.message}`);
-          setEntryState("idle");
-        } finally {
-          setIsLoading(false);
+        if (!data.questions || !Array.isArray(data.questions)) {
+          console.error("onQuizGenerated: Invalid questions format", {
+            questions: data.questions,
+            timestamp: new Date().toISOString(),
+          });
+          throw new Error("Invalid questions format from Supabase");
         }
-      },
-
-      onAnswerSubmitted: (
-        player: string,
-        isCorrect: boolean,
-        questionIndex: number,
-        log: any
-      ) => {
-        console.log("Event AnswerSubmitted fired. Args:", { player, isCorrect, questionIndex, log });
-        if (!address) {
-          console.log("No address in context, ignoring AnswerSubmitted.");
-          return;
-        }
-        if (player.toLowerCase() !== address.toLowerCase() || quizId === "") {
-          console.log("AnswerSubmitted: ignoring for player or missing quizId");
-          return;
-        }
-        // Advance or reset timer
-        if (isCorrect) {
-          setCurrentIndex((i) => Math.min(i + 1, questions.length - 1));
-        }
+        console.log("onQuizGenerated: Questions fetched", {
+          quizId: resp.data.quizId,
+          questionCount: data.questions.length,
+          questions: data.questions,
+          timestamp: new Date().toISOString(),
+        });
+        setQuestions(data.questions);
         setEntryState("inQuiz");
         setTimer(45);
-      },
-
-      onQuizCompleted: (player: string, correctCount: number, log: any) => {
-        console.log("Event QuizCompleted fired. Args:", { player, correctCount, log });
-        if (!address) {
-          console.log("No address in context, ignoring QuizCompleted.");
-          return;
-        }
-        if (player.toLowerCase() !== address.toLowerCase() || quizId === "") {
-          console.log("QuizCompleted: ignoring for player or missing quizId");
-          return;
-        }
-        setReward(correctCount.toString());
-        setEntryState("awaitingAnswer");
-        fetchLeaderboard();
-      },
-
-      onBonusAwarded: (player: string, bonus: bigint, log: any) => {
-        console.log("Event BonusAwarded fired. Args:", { player, bonus, log });
-        if (!address) {
-          console.log("No address in context, ignoring BonusAwarded.");
-          return;
-        }
-        if (player.toLowerCase() !== address.toLowerCase() || quizId === "") {
-          console.log("BonusAwarded: ignoring for player or missing quizId");
-          return;
-        }
-        setReward((r) => {
-          const prev = parseInt(r || "0", 10);
-          return (prev + Number(bonus)).toString();
+        setErrorMessage("");
+      } catch (err: any) {
+        console.error("onQuizGenerated: Error", {
+          message: err.message,
+          error: err.response?.data || err,
+          timestamp: new Date().toISOString(),
         });
-      },
-
-      onLeaderboardRefreshed: (timestamp: bigint, log: any) => {
-        console.log("Event LeaderboardRefreshed fired. Args:", { timestamp, log });
-        fetchLeaderboard();
-      },
-
-      onQuizCancelled: (player: string, refund: bigint, log: any) => {
-        console.log("Event QuizCancelled fired. Args:", { player, refund, log });
-        if (!address) {
-          console.log("No address in context, ignoring QuizCancelled.");
-          return;
-        }
-        if (player.toLowerCase() !== address.toLowerCase() || quizId === "") {
-          console.log("QuizCancelled: ignoring for player or missing quizId");
-          return;
-        }
+        setErrorMessage(`Failed to generate quiz: ${err.response?.data?.error || err.message}`);
         setEntryState("idle");
-        setQuizId("");
-        setQuestions([]);
-        setCurrentIndex(0);
-        setReward("");
-      },
-    }),
-    [address, quizId, questions.length, fetchLeaderboard]
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [address, selectedDomains, difficulty]
   );
 
-  // 5) Subscribe to contract events
-  useEffect(() => {
-    if (!quizContract || !address || !tokenContract) {
-      console.warn("Cannot subscribe: quizContract or address or tokenContract missing");
-      return;
-    }
-    console.log("=== Subscribing to contract events ===");
-    console.log("quizContract.watch keys:", Object.keys((quizContract.watch || {}) as any));
-
-    const trySubscribe = (
-      methodName: string,
-      handler: (...args: any[]) => void
-    ) => {
-      const watchObj = quizContract.watch as any;
-      const fn = watchObj[methodName];
-      if (typeof fn !== "function") {
-        console.warn(`quizContract.watch.${methodName} is NOT a function`);
-        return null;
-      }
-      try {
-        console.log(`Subscribing to ${methodName}...`);
-        const unsub = fn(handler);
-        console.log(`Subscribed to ${methodName}`);
-        return unsub as () => void;
-      } catch (err) {
-        console.error(`Error subscribing to ${methodName}:`, err);
-        return null;
-      }
-    };
-
-    const unsubscribers: Array<() => void> = [];
-    unsubscribers.push(
-      trySubscribe("onQuizGenerated", eventHandlers.onQuizGenerated) || (() => {})
-    );
-    unsubscribers.push(
-      trySubscribe("onAnswerSubmitted", eventHandlers.onAnswerSubmitted) || (() => {})
-    );
-    unsubscribers.push(
-      trySubscribe("onQuizCompleted", eventHandlers.onQuizCompleted) || (() => {})
-    );
-    unsubscribers.push(
-      trySubscribe("onBonusAwarded", eventHandlers.onBonusAwarded) || (() => {})
-    );
-    unsubscribers.push(
-      trySubscribe("onLeaderboardRefreshed", eventHandlers.onLeaderboardRefreshed) ||
-        (() => {})
-    );
-    unsubscribers.push(
-      trySubscribe("onQuizCancelled", eventHandlers.onQuizCancelled) || (() => {})
-    );
-
-    return () => {
-      console.log("=== Unsubscribing from contract events ===");
-      unsubscribers.forEach((unsub) => {
-        try {
-          unsub();
-        } catch (err) {
-          console.error("Error during unsubscribe:", err);
-        }
+  const onAnswerSubmitted = useCallback(
+    (logs: any[]) => {
+      const event = logs[0];
+      const player: string = event.args.player;
+      const qId: string = event.args.quizId;
+      const isCorrect: boolean = event.args.isCorrect;
+      console.log("onAnswerSubmitted: Event received", {
+        player,
+        quizId: qId,
+        isCorrect,
+        txHash: event.transactionHash,
+        blockNumber: Number(event.blockNumber),
+        timestamp: new Date().toISOString(),
       });
-    };
-  }, [quizContract, address, tokenContract, eventHandlers]);
-
-  // 6) Timer logic
-  useEffect(() => {
-    if (!["inQuiz", "awaitingAnswer"].includes(entryState)) return;
-    if (timer <= 0) {
-      console.log("Timer expired: auto-submitting/skipping");
-      submitAnswer(255);
-      return;
-    }
-    timerRef.current = window.setTimeout(() => setTimer((t) => t - 1), 1000);
-    return () => {
-      if (timerRef.current !== null) {
-        clearTimeout(timerRef.current);
+      if (player.toLowerCase() !== address?.toLowerCase() || qId !== quizId) {
+        console.log("onAnswerSubmitted: Skipping, mismatch", {
+          player,
+          address,
+          quizId,
+          qId,
+          timestamp: new Date().toISOString(),
+        });
+        return;
       }
-    };
-  }, [timer, entryState]);
+      setEntryState("inQuiz");
+      if (isCorrect) {
+        setCurrentIndex((i) => Math.min(i + 1, questions.length - 1));
+        setTimer(45);
+      } else {
+        setTimer(45);
+      }
+    },
+    [address, quizId, questions.length]
+  );
 
-  // 7) Handlers: startQuiz, submitAnswer, finishQuiz, etc.
+  const onQuizCompleted = useCallback(
+    (logs: any[]) => {
+      const event = logs[0];
+      const player: string = event.args.player;
+      const qId: string = event.args.quizId;
+      const score: number = Number(event.args.correctCount);
+      console.log("onQuizCompleted: Event received", {
+        player,
+        quizId: qId,
+        score,
+        txHash: event.transactionHash,
+        blockNumber: Number(event.blockNumber),
+        timestamp: new Date().toISOString(),
+      });
+      if (player.toLowerCase() !== address?.toLowerCase() || qId !== quizId) {
+        console.log("onQuizCompleted: Skipping, mismatch", {
+          player,
+          address,
+          quizId,
+          qId,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      setReward(score.toString());
+      setEntryState("awaitingAnswer");
+      fetchLeaderboard();
+    },
+    [address, quizId, fetchLeaderboard]
+  );
+
+  const onBonusAwarded = useCallback(
+    (logs: any[]) => {
+      const event = logs[0];
+      const player: string = event.args.player;
+      const qId: string = event.args.quizId;
+      const amount: number = Number(event.args.amount);
+      console.log("onBonusAwarded: Event received", {
+        player,
+        quizId: qId,
+        amount,
+        txHash: event.transactionHash,
+        blockNumber: Number(event.blockNumber),
+        timestamp: new Date().toISOString(),
+      });
+      if (player.toLowerCase() !== address?.toLowerCase() || qId !== quizId) {
+        console.log("onBonusAwarded: Skipping, mismatch", {
+          player,
+          address,
+          quizId,
+          qId,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      setReward((r) => (parseInt(r || "0") + amount).toString());
+    },
+    [address, quizId]
+  );
+
+  const onLeaderboardRefreshed = useCallback(
+    (logs: any[]) => {
+      const event = logs[0];
+      console.log("onLeaderboardRefreshed: Event received", {
+        txHash: event.transactionHash,
+        blockNumber: Number(event.blockNumber),
+        timestamp: new Date().toISOString(),
+      });
+      fetchLeaderboard();
+    },
+    [fetchLeaderboard]
+  );
+
+  const onQuizCancelled = useCallback(
+    (logs: any[]) => {
+      const event = logs[0];
+      const player: string = event.args.player;
+      const qId: string = event.args.quizId;
+      console.log("onQuizCancelled: Event received", {
+        player,
+        quizId: qId,
+        txHash: event.transactionHash,
+        blockNumber: Number(event.blockNumber),
+        timestamp: new Date().toISOString(),
+      });
+      if (player.toLowerCase() !== address?.toLowerCase() || qId !== quizId) {
+        console.log("onQuizCancelled: Skipping, mismatch", {
+          player,
+          address,
+          quizId,
+          qId,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      setEntryState("idle");
+      setQuizId("");
+      setQuestions([]);
+      setCurrentIndex(0);
+      setReward("");
+    },
+    [address, quizId]
+  );
+
+  const onVRFRequestInitiated = useCallback(
+    (logs: any[]) => {
+      const event = logs[0];
+      const requestId: string = event.args.requestId.toString();
+      const player: string = event.args.player;
+      console.log("onVRFRequestInitiated: Event received", {
+        requestId,
+        player,
+        txHash: event.transactionHash,
+        blockNumber: Number(event.blockNumber),
+        timestamp: new Date().toISOString(),
+      });
+      if (player.toLowerCase() !== address?.toLowerCase()) {
+        console.log("onVRFRequestInitiated: Skipping, player mismatch", {
+          player,
+          address,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      setVrfRequestId(requestId);
+    },
+    [address]
+  );
+
+  // Event Subscriptions
+  const chainQuizAddress = process.env.NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
+  const chainQuizAbi = [
+    {
+      name: "QuizGenerated",
+      type: "event",
+      inputs: [
+        { name: "player", type: "address", indexed: true },
+        { name: "quizId", type: "string", indexed: true },
+        { name: "numQuestions", type: "uint8", indexed: false },
+      ],
+    },
+    {
+      name: "AnswerSubmitted",
+      type: "event",
+      inputs: [
+        { name: "player", type: "address", indexed: true },
+        { name: "quizId", type: "string", indexed: true },
+        { name: "isCorrect", type: "bool", indexed: false },
+        { name: "questionIndex", type: "uint8", indexed: false },
+      ],
+    },
+    {
+      name: "QuizCompleted",
+      type: "event",
+      inputs: [
+        { name: "player", type: "address", indexed: true },
+        { name: "quizId", type: "string", indexed: false },
+        { name: "correctCount", type: "uint8", indexed: false },
+      ],
+    },
+    {
+      name: "BonusAwarded",
+      type: "event",
+      inputs: [
+        { name: "player", type: "address", indexed: true },
+        { name: "quizId", type: "string", indexed: true },
+        { name: "amount", type: "uint256", indexed: false },
+      ],
+    },
+    {
+      name: "LeaderboardRefreshed",
+      type: "event",
+      inputs: [],
+    },
+    {
+      name: "QuizCancelled",
+      type: "event",
+      inputs: [
+        { name: "player", type: "address", indexed: true },
+        { name: "quizId", type: "string", indexed: true },
+        { name: "refundAmount", type: "uint256", indexed: false },
+      ],
+    },
+    {
+      name: "VRFRequestInitiated",
+      type: "event",
+      inputs: [
+        { name: "requestId", type: "uint256", indexed: true },
+        { name: "player", type: "address", indexed: true },
+      ],
+    },
+    {
+      name: "FunctionsRequestInitiated",
+      type: "event",
+      inputs: [
+        { name: "requestId", type: "bytes32", indexed: true },
+        { name: "player", type: "address", indexed: true },
+      ],
+    },
+  ];
+
+  useWatchContractEvent({
+    address: chainQuizAddress,
+    abi: chainQuizAbi,
+    eventName: "QuizGenerated",
+    onLogs: onQuizGenerated,
+    enabled: !!quizContract && !!address && status === "connected",
+  });
+
+  useWatchContractEvent({
+    address: chainQuizAddress,
+    abi: chainQuizAbi,
+    eventName: "AnswerSubmitted",
+    onLogs: onAnswerSubmitted,
+    enabled: !!quizContract && !!address && status === "connected",
+  });
+
+  useWatchContractEvent({
+    address: chainQuizAddress,
+    abi: chainQuizAbi,
+    eventName: "QuizCompleted",
+    onLogs: onQuizCompleted,
+    enabled: !!quizContract && !!address && status === "connected",
+  });
+
+  useWatchContractEvent({
+    address: chainQuizAddress,
+    abi: chainQuizAbi,
+    eventName: "BonusAwarded",
+    onLogs: onBonusAwarded,
+    enabled: !!quizContract && !!address && status === "connected",
+  });
+
+  useWatchContractEvent({
+    address: chainQuizAddress,
+    abi: chainQuizAbi,
+    eventName: "LeaderboardRefreshed",
+    onLogs: onLeaderboardRefreshed,
+    enabled: !!quizContract && !!address && status === "connected",
+  });
+
+  useWatchContractEvent({
+    address: chainQuizAddress,
+    abi: chainQuizAbi,
+    eventName: "QuizCancelled",
+    onLogs: onQuizCancelled,
+    enabled: !!quizContract && !!address && status === "connected",
+  });
+
+  useWatchContractEvent({
+    address: chainQuizAddress,
+    abi: chainQuizAbi,
+    eventName: "VRFRequestInitiated",
+    onLogs: onVRFRequestInitiated,
+    enabled: !!quizContract && !!address && status === "connected",
+  });
+
+  // Start Quiz
   const startQuiz = useCallback(async () => {
     if (!quizContract || !tokenContract || selectedDomains.length < 5 || !address) {
       console.error("startQuiz: Invalid input", {
@@ -372,9 +536,9 @@ export default function Home() {
       ]);
       console.log("Approve tx hash:", approveTxHash);
       console.log("Calling startQuiz on-chain with domains:", selectedDomains);
-      const startQuizTxHash = await quizContract.write.startQuiz([
+      const startQuizTxHash = await quizContract.write.startQuiz(
         selectedDomains,
-      ]);
+      );
       console.log("startQuiz tx hash:", startQuizTxHash);
       // Rely on event subscription for QuizGenerated
     } catch (err: any) {
@@ -390,77 +554,181 @@ export default function Home() {
     }
   }, [quizContract, tokenContract, selectedDomains, address]);
 
+
+  // Submit Answer
   const submitAnswer = useCallback(
     async (selectedIndex: number) => {
-      if (!quizContract || !address || !quizId) {
-        console.warn("submitAnswer: missing quizContract/address/quizId");
+      if (!quizContract || !address || status !== "connected" || !quizId) {
+        console.error("submitAnswer: Invalid input", {
+          quizContract: !!quizContract,
+          address: !!address,
+          status,
+          quizId,
+          timestamp: new Date().toISOString(),
+        });
         return;
       }
-      console.log("Submitting answer on-chain:", {
+      console.log("submitAnswer: Submitting", {
         quizId,
-        questionIndex: currentIndex,
+        questionId: questions[currentIndex]?.id,
         selectedIndex,
         timestamp: new Date().toISOString(),
       });
-      setEntryState("awaitingAnswer");
       setIsLoading(true);
       try {
-        // First, backend verify (optional):
         const apiUrl = process.env.NEXT_PUBLIC_ELIZAOS_URL || "http://localhost:5000";
-        console.log("Calling verifyAnswer backend:", `${apiUrl}/verifyAnswer`, {
-          quizId,
-          questionId: questions[currentIndex]?.id,
-          selectedIndex,
+        console.log("submitAnswer: Verifying answer with ELIZA", {
+          url: `${apiUrl}/verifyAnswer`,
+          payload: { quizId, questionId: questions[currentIndex]?.id, selectedIndex },
+          timestamp: new Date().toISOString(),
         });
         const resp = await axios.post(`${apiUrl}/verifyAnswer`, {
           quizId,
           questionId: questions[currentIndex]?.id,
           selectedIndex,
         });
-        console.log("VerifyAnswer API response:", resp.status, resp.data);
+        console.log("submitAnswer: ELIZA verify response", {
+          isCorrect: resp.data.isCorrect,
+          status: resp.status,
+          response: resp.data,
+          timestamp: new Date().toISOString(),
+        });
         if (!resp.data.isCorrect) {
-          console.log("Answer incorrect per backend.");
+          console.log("submitAnswer: Incorrect answer", {
+            quizId,
+            questionId: questions[currentIndex]?.id,
+            selectedIndex,
+            timestamp: new Date().toISOString(),
+          });
           setErrorMessage("Incorrect answer. Try again!");
-          setEntryState("inQuiz");
           setTimer(45);
+          setEntryState("inQuiz");
           return;
         }
-        // On-chain call
-        const submitTxHash = await quizContract.write.submitAnswer(selectedIndex);
-        console.log("submitAnswer tx hash:", submitTxHash);
-        // Rely on event subscription (AnswerSubmitted)
+        console.log("submitAnswer: Submitting on-chain", {
+          selectedIndex,
+          timestamp: new Date().toISOString(),
+        });
+        const submitHash = await quizContract.write.submitAnswer(selectedIndex);
+        console.log("submitAnswer: Transaction sent", {
+          txHash: submitHash,
+          timestamp: new Date().toISOString(),
+        });
+        if (publicClient) {
+          console.log("submitAnswer: Waiting for transaction", {
+            txHash: submitHash,
+            timestamp: new Date().toISOString(),
+          });
+          const receipt = await publicClient.waitForTransactionReceipt({
+            hash: submitHash,
+          });
+          console.log("submitAnswer: Transaction confirmed", {
+            txHash: submitHash,
+            receipt: {
+              status: receipt.status,
+              gasUsed: receipt.gasUsed.toString(),
+              blockNumber: receipt.blockNumber.toString(),
+            },
+            timestamp: new Date().toISOString(),
+          });
+        }
+        if (currentIndex < questions.length - 1) {
+          console.log("submitAnswer: Advancing to next question", {
+            currentIndex,
+            nextIndex: currentIndex + 1,
+            totalQuestions: questions.length,
+            timestamp: new Date().toISOString(),
+          });
+          setCurrentIndex(currentIndex + 1);
+          setTimer(45);
+        } else {
+          console.log("submitAnswer: Finishing quiz", {
+            quizId,
+            timestamp: new Date().toISOString(),
+          });
+          const finishHash = await quizContract.write.finishQuiz();
+          console.log("submitAnswer: Finish quiz transaction sent", {
+            txHash: finishHash,
+            timestamp: new Date().toISOString(),
+          });
+          if (publicClient) {
+            console.log("submitAnswer: Waiting for finish quiz transaction", {
+              txHash: finishHash,
+              timestamp: new Date().toISOString(),
+            });
+            const receipt = await publicClient.waitForTransactionReceipt({
+              hash: finishHash,
+            });
+            console.log("submitAnswer: Finish quiz transaction confirmed", {
+              txHash: finishHash,
+              receipt: {
+                status: receipt.status,
+                gasUsed: receipt.gasUsed.toString(),
+                blockNumber: receipt.blockNumber.toString(),
+              },
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
       } catch (err: any) {
-        console.error("submitAnswer error:", {
+        console.error("submitAnswer: Error", {
           message: err.message,
           error: err.response?.data || err,
           timestamp: new Date().toISOString(),
         });
-        setErrorMessage(
-          `Failed to submit answer: ${err.response?.data?.error || err.message}`
-        );
+        setErrorMessage(`Failed to submit answer: ${err.response?.data?.error || err.message}`);
         setEntryState("inQuiz");
         setTimer(45);
       } finally {
         setIsLoading(false);
       }
     },
-    [quizContract, address, quizId, questions, currentIndex]
+    [quizContract, address, status, quizId, questions, currentIndex, publicClient]
   );
 
+  // Finish Quiz
   const finishQuiz = useCallback(async () => {
-    if (!quizContract || !address) {
-      console.warn("finishQuiz: missing quizContract or address");
+    if (!quizContract || !address || status !== "connected") {
+      console.error("finishQuiz: Invalid input", {
+        quizContract: !!quizContract,
+        address: !!address,
+        status,
+        timestamp: new Date().toISOString(),
+      });
       return;
     }
-    console.log("Finishing quiz on-chain:", { quizId, timestamp: new Date().toISOString() });
+    console.log("finishQuiz: Starting", {
+      quizId,
+      timestamp: new Date().toISOString(),
+    });
     setEntryState("awaitingAnswer");
     setIsLoading(true);
     try {
-      const finishTxHash = await quizContract.write.finishQuiz();
-      console.log("finishQuiz tx hash:", finishTxHash);
-      // Rely on event subscription (QuizCompleted)
+      const finishHash = await quizContract.write.finishQuiz();
+      console.log("finishQuiz: Transaction sent", {
+        txHash: finishHash,
+        timestamp: new Date().toISOString(),
+      });
+      if (publicClient) {
+        console.log("finishQuiz: Waiting for transaction", {
+          txHash: finishHash,
+          timestamp: new Date().toISOString(),
+        });
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash: finishHash,
+        });
+        console.log("finishQuiz: Transaction confirmed", {
+          txHash: finishHash,
+          receipt: {
+            status: receipt.status,
+            gasUsed: receipt.gasUsed.toString(),
+            blockNumber: receipt.blockNumber.toString(),
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
     } catch (err: any) {
-      console.error("finishQuiz error:", {
+      console.error("finishQuiz: Error", {
         message: err.message,
         error: err,
         timestamp: new Date().toISOString(),
@@ -470,22 +738,50 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [quizContract, address, quizId]);
+  }, [quizContract, address, status, quizId, publicClient]);
 
+  // Request Random Challenge
   const requestChallenge = useCallback(async () => {
-    if (!quizContract || !address) {
-      console.warn("requestChallenge: missing quizContract or address");
+    if (!quizContract || !address || status !== "connected") {
+      console.error("requestChallenge: Invalid input", {
+        quizContract: !!quizContract,
+        address: !!address,
+        status,
+        timestamp: new Date().toISOString(),
+      });
       return;
     }
-    console.log("Requesting random challenge on-chain:", { timestamp: new Date().toISOString() });
+    console.log("requestChallenge: Starting", {
+      timestamp: new Date().toISOString(),
+    });
     setEntryState("awaitingAnswer");
     setIsLoading(true);
     try {
-      const challengeTxHash = await quizContract.write.requestRandomChallenge();
-      console.log("requestRandomChallenge tx hash:", challengeTxHash);
-      // Rely on event subscription if relevant
+      const challengeHash = await quizContract.write.requestRandomChallenge();
+      console.log("requestChallenge: Transaction sent", {
+        txHash: challengeHash,
+        timestamp: new Date().toISOString(),
+      });
+      if (publicClient) {
+        console.log("requestChallenge: Waiting for transaction", {
+          txHash: challengeHash,
+          timestamp: new Date().toISOString(),
+        });
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash: challengeHash,
+        });
+        console.log("requestChallenge: Transaction confirmed", {
+          txHash: challengeHash,
+          receipt: {
+            status: receipt.status,
+            gasUsed: receipt.gasUsed.toString(),
+            blockNumber: receipt.blockNumber.toString(),
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
     } catch (err: any) {
-      console.error("requestChallenge error:", {
+      console.error("requestChallenge: Error", {
         message: err.message,
         error: err,
         timestamp: new Date().toISOString(),
@@ -495,22 +791,51 @@ export default function Home() {
       setEntryState("idle");
       setIsLoading(false);
     }
-  }, [quizContract, address]);
+  }, [quizContract, address, status, publicClient]);
 
+  // Cancel Quiz
   const cancelQuiz = useCallback(async () => {
-    if (!quizContract || !address) {
-      console.warn("cancelQuiz: missing quizContract or address");
+    if (!quizContract || !address || status !== "connected") {
+      console.error("cancelQuiz: Invalid input", {
+        quizContract: !!quizContract,
+        address: !!address,
+        status,
+        timestamp: new Date().toISOString(),
+      });
       return;
     }
-    console.log("Cancelling quiz on-chain:", { quizId, timestamp: new Date().toISOString() });
+    console.log("cancelQuiz: Starting", {
+      quizId,
+      timestamp: new Date().toISOString(),
+    });
     setEntryState("awaitingAnswer");
     setIsLoading(true);
     try {
-      const cancelTxHash = await quizContract.write.cancelQuiz();
-      console.log("cancelQuiz tx hash:", cancelTxHash);
-      // Rely on event subscription (QuizCancelled)
+      const cancelHash = await quizContract.write.cancelQuiz();
+      console.log("cancelQuiz: Transaction sent", {
+        txHash: cancelHash,
+        timestamp: new Date().toISOString(),
+      });
+      if (publicClient) {
+        console.log("cancelQuiz: Waiting for transaction", {
+          txHash: cancelHash,
+          timestamp: new Date().toISOString(),
+        });
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash: cancelHash,
+        });
+        console.log("cancelQuiz: Transaction confirmed", {
+          txHash: cancelHash,
+          receipt: {
+            status: receipt.status,
+            gasUsed: receipt.gasUsed.toString(),
+            blockNumber: receipt.blockNumber.toString(),
+          },
+          timestamp: new Date().toISOString(),
+        });
+      }
     } catch (err: any) {
-      console.error("cancelQuiz error:", {
+      console.error("cancelQuiz: Error", {
         message: err.message,
         error: err,
         timestamp: new Date().toISOString(),
@@ -520,12 +845,21 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [quizContract, address, quizId]);
+  }, [quizContract, address, status, quizId, publicClient]);
 
-  // 8) Effects: mount, domains, balance, leaderboard
+  // Effects
   useEffect(() => {
+    console.log("Mount effect: Setting initial state", {
+      timestamp: new Date().toISOString(),
+    });
     setIsMounted(true);
     setLastUpdated(new Date().toLocaleTimeString());
+  }, []);
+
+  useEffect(() => {
+    console.log("Domains effect: Setting domains", {
+      timestamp: new Date().toISOString(),
+    });
     setDomains([
       "DeFi",
       "Oracles",
@@ -539,30 +873,92 @@ export default function Home() {
       "SmartContracts",
       "WalletSecurity",
       "Stablecoins",
+      "Chainlink",
+      "CCIP",
+      "VRF",
+      "Automation",
+      "DataFeeds",
     ]);
   }, []);
 
-  useEffect(() => {
-    const fetchBalance = async () => {
-      if (!address || !tokenContract) return;
-      try {
-        const bal = await tokenContract.read.balanceOf(address);
-        setBalance(formatEther(bal));
-      } catch (err) {
-        console.error("Error fetching balance:", err);
-        setBalance("0");
-      }
-    };
-    fetchBalance();
-  }, [address, tokenContract]);
+useEffect(() => {
+  const fetchBalance = async () => {
+    console.log("fetchBalance 📋", {
+      address,
+      status,
+      tokenContract: !!tokenContract,
+      isValidAddress: isAddress(address ?? ""),
+      timestamp: new Date().toISOString(),
+    });
+
+    // 1️⃣ Guard: address must be a string and valid EVM address
+    if (typeof address !== "string" || status !== "connected" || !tokenContract || !isAddress(address)) {
+      console.log("fetchBalance ⏭ skipping invalid input");
+      setBalance("0");
+      return;
+    }
+
+    try {
+      // 2️⃣ Call with a string, not an array!
+      //    TS error “`0x${string}`[] not assignable to string” goes away here.
+      const raw = await tokenContract.read.balanceOf(address as Address);
+
+      console.log("fetchBalance raw return:", {
+        typeofRaw: typeof raw,
+        raw,
+        timestamp: new Date().toISOString(),
+      });
+
+      // 3️⃣ Normalize to bigint in case raw isn’t typed exactly
+      const bal: bigint =
+        typeof raw === "bigint" ? raw : BigInt(raw as unknown as string);
+
+      console.log("fetchBalance normalized bigint:", {
+        bal,
+        timestamp: new Date().toISOString(),
+      });
+
+      // 4️⃣ Format & set
+      setBalance(formatEther(bal));
+      console.log("fetchBalance ✅ success", { balance: formatEther(bal) });
+    } catch (err: any) {
+      console.error("fetchBalance ❌ error", err);
+      setBalance("0");
+    }
+  };
+
+  fetchBalance();
+}, [address, status, tokenContract]);
 
   useEffect(() => {
+    console.log("Leaderboard effect: Starting periodic fetch", {
+      timestamp: new Date().toISOString(),
+    });
     fetchLeaderboard();
     const interval = setInterval(fetchLeaderboard, 60_000);
-    return () => clearInterval(interval);
+    return () => {
+      console.log("Leaderboard effect: Cleaning up interval", {
+        timestamp: new Date().toISOString(),
+      });
+      clearInterval(interval);
+    };
   }, [fetchLeaderboard]);
 
-  // 9) Early returns
+  useEffect(() => {
+    if (!["inQuiz", "awaitingAnswer"].includes(entryState)) return;
+    if (timer === 0) {
+      submitAnswer(255); // Timeout
+      return;
+    }
+    timerRef.current = setTimeout(() => setTimer((t) => t - 1), 1000);
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    };
+  }, [timer, entryState, submitAnswer]);
+
+  // Early returns
   if (!isMounted) {
     return (
       <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
@@ -581,7 +977,8 @@ export default function Home() {
       </div>
     );
   }
-  if (!quizContract || !tokenContract || !address) {
+
+  if (!quizContract || !tokenContract) {
     return (
       <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
         <header className="flex justify-between items-center p-6 bg-gray-800/70 backdrop-blur-sm">
@@ -590,15 +987,13 @@ export default function Home() {
         </header>
         <main className="flex-1 p-6">
           <p className="text-center text-red-400">
-            Error: Contract addresses, RPC URL, or wallet connection not configured.
-            Check NEXT_PUBLIC_CHAINQUIZ_ADDRESS and NEXT_PUBLIC_BASE_RPC_URL, or connect your wallet.
+            Error: Contract addresses or RPC URL not configured. Check NEXT_PUBLIC_PROPERTIES in .env.local.
           </p>
         </main>
       </div>
     );
   }
 
-  // 10) Main UI render
   return (
     <ErrorBoundary>
       <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
@@ -622,15 +1017,15 @@ export default function Home() {
           )}
 
           {/* Wallet & Balance */}
-          {isConnected && (
+          {status === "connected" && address && (
             <div className="flex justify-end gap-4">
               <p className="text-sm text-gray-400 truncate max-w-[12rem]">{address}</p>
               <p className="text-sm text-blue-400">{balance} QUIZ</p>
             </div>
           )}
 
-          {/* Domain Selection & Start Quiz */}
-          {isConnected && entryState === "idle" && (
+          {/* Domain Selection, Difficulty, & Start Quiz */}
+          {status === "connected" && address && entryState === "idle" && (
             <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
               <h2 className="text-xl font-semibold text-gray-100">Select 5+ Domains</h2>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
@@ -652,6 +1047,22 @@ export default function Home() {
                   </button>
                 ))}
               </div>
+              <h2 className="text-xl font-semibold text-gray-100">Select Difficulty</h2>
+              <div className="flex gap-3">
+                {["Easy", "Medium", "Hard"].map((diff) => (
+                  <button
+                    key={diff}
+                    onClick={() => setDifficulty(diff as "Easy" | "Medium" | "Hard")}
+                    className={`p-2 rounded-lg border text-sm ${
+                      difficulty === diff
+                        ? "bg-blue-500 text-white border-blue-500"
+                        : "bg-gray-700 text-gray-200 border-gray-600 hover:bg-gray-600"
+                    }`}
+                  >
+                    {diff}
+                  </button>
+                ))}
+              </div>
               <button
                 onClick={startQuiz}
                 disabled={selectedDomains.length < 5 || entryState !== "idle" || isLoading}
@@ -665,23 +1076,19 @@ export default function Home() {
                 <span className={isLoading ? "opacity-0" : ""}>
                   {entryState === "staking"
                     ? "Staking 10 QUIZ..."
-                    : `Start Quiz (${selectedDomains.length} Domains, ${
-                        questions.length || 10
-                      } Questions)`}
+                    : `Start Quiz (${selectedDomains.length} Domains, ${difficulty}, ${questions.length || 10} Questions)`}
                 </span>
               </button>
             </div>
           )}
 
           {/* Quiz Questions */}
-          {isConnected && entryState === "inQuiz" && questions.length > 0 && (
+          {status === "connected" && address && entryState === "inQuiz" && questions.length > 0 && (
             <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
               <h2 className="text-xl font-semibold text-gray-100">
                 Question {currentIndex + 1}/{questions.length}
               </h2>
-              <p className="text-base text-gray-200">
-                {questions[currentIndex]?.text || "Loading..."}
-              </p>
+              <p className="text-base text-gray-200">{questions[currentIndex]?.text || "Loading..."}</p>
               <div className="grid grid-cols-1 gap-2">
                 {Array.isArray(questions[currentIndex]?.options) ? (
                   questions[currentIndex].options.map((opt: string, idx: number) => (
@@ -716,7 +1123,7 @@ export default function Home() {
           )}
 
           {/* Finish Quiz */}
-          {isConnected && entryState === "awaitingAnswer" && (
+          {status === "connected" && address && entryState === "awaitingAnswer" && (
             <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4 text-center">
               <h2 className="text-xl font-semibold text-gray-100">All questions answered!</h2>
               <button
