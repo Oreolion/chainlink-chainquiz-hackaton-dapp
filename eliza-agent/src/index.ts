@@ -31,7 +31,8 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 export const wait = (minTime: number = 1000, maxTime: number = 3000) => {
-  const waitTime = Math.floor(Math.random() * (maxTime - minTime + 1)) + minTime;
+  const waitTime =
+    Math.floor(Math.random() * (maxTime - minTime + 1)) + minTime;
   return new Promise((resolve) => setTimeout(resolve, waitTime));
 };
 
@@ -46,7 +47,7 @@ export function createAgent(
   elizaLogger.success(
     elizaLogger.successesTitle,
     "Creating runtime for character",
-    character.name,
+    character.name
   );
 
   nodePlugin ??= createNodePlugin();
@@ -57,12 +58,9 @@ export function createAgent(
     modelProvider: character.modelProvider,
     evaluators: [],
     character,
-    plugins: [
-      bootstrapPlugin,
-      nodePlugin,
-      ChainQuizPlugin,
-      evmPlugin,
-    ].filter(Boolean),
+    plugins: [bootstrapPlugin, nodePlugin, ChainQuizPlugin, evmPlugin].filter(
+      Boolean
+    ),
     providers: [],
     actions: [],
     services: [],
@@ -81,7 +79,7 @@ async function startAgent(character: Character, directClient: DirectClient) {
     if (!token) {
       throw new Error("Token not found for provider");
     }
-    const dataDir = path.join(__dirname, "../data");
+    const dataDir = path.join(__dirname, "data");
 
     if (!fs.existsSync(dataDir)) {
       fs.mkdirSync(dataDir, { recursive: true });
@@ -104,7 +102,7 @@ async function startAgent(character: Character, directClient: DirectClient) {
   } catch (error) {
     elizaLogger.error(
       `Error starting agent for character ${character.name}:`,
-      error,
+      error
     );
     console.error(error);
     throw error;
@@ -146,7 +144,7 @@ const startAgents = async () => {
   console.log("characters", characters);
   try {
     for (const character of characters) {
-      await startAgent(character, directClient as DirectClient);
+      await startAgent(character, directClient);
     }
   } catch (error) {
     elizaLogger.error("Error starting agents:", error);
@@ -154,7 +152,9 @@ const startAgents = async () => {
 
   // Check Express port
   while (!(await checkPortAvailable(expressPort))) {
-    elizaLogger.warn(`Port ${expressPort} is in use, trying ${expressPort + 1}`);
+    elizaLogger.warn(
+      `Port ${expressPort} is in use, trying ${expressPort + 1}`
+    );
     expressPort++;
     clientPort++;
   }
@@ -165,27 +165,52 @@ const startAgents = async () => {
     clientPort++;
   }
 
-  // Add Express server
+  // Start Express server
   const app = express();
   app.use(express.json());
 
   app.get("/health", (req, res) => {
     console.log("Health check requested");
-    res.status(200).json({ status: "OK" });
+    res.status(200).json({ status: "healthy" });
   });
 
   app.post("/generateQuiz", async (req, res) => {
-    console.log("Received /generateQuiz request:", req.body);
+    console.log("POST /generateQuiz received:", req.body);
     try {
-      const { domains, playerAddress } = req.body;
-      if (!Array.isArray(domains) || domains.length < 5 || typeof playerAddress !== "string") {
-        console.log("Invalid input received");
-        return res.status(400).json({ error: "Invalid input: 5+ domains and playerAddress required" });
+      const { domains, playerAddress, difficulty, quizId } = req.body;
+      if (
+        !Array.isArray(domains) ||
+        domains.length < 5 ||
+        !playerAddress ||
+        !difficulty ||
+        !quizId
+      ) {
+        console.error("Invalid input:", {
+          domains,
+          playerAddress,
+          difficulty,
+          quizId,
+        });
+        
+        return res
+          .status(400)
+          .json({
+            error:
+              "Invalid input: 5+ domains, playerAddress, difficulty, and quizId required",
+          });
       }
 
-      if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY || !process.env.OPENAI_API_KEY) {
+      if (
+        !process.env.SUPABASE_URL ||
+        !process.env.SUPABASE_SERVICE_ROLE_KEY ||
+        !process.env.OPENAI_API_KEY
+      ) {
         console.error("Missing environment variables");
-        return res.status(500).json({ error: "Server configuration error: Missing environment variables" });
+        return res
+          .status(500)
+          .json({
+            error: "Server configuration error: Missing environment variables",
+          });
       }
 
       const supabase = createClient(
@@ -194,73 +219,91 @@ const startAgents = async () => {
       );
       const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
-      console.log("Calling OpenAI for questions");
-      const questions = await openai.chat.completions.create({
+      console.log("Generating questions with OpenAI");
+      const questionsResponse = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages: [
           {
             role: "system",
             content: `
-You are an assistant that produces multiple-choice questions about crypto/web3.
-Return EXACTLY 10 questions in JSON:
+You are an expert in crypto and web3, tasked with generating multiple-choice questions for a quiz.
+Generate EXACTLY 10 questions based on the provided domains and difficulty level.
+Return valid JSON:
 [
   {
-    "id": "q1",
-    "domain": "<one of the domains>",
-    "text": "<question text>",
-    "options": ["<opt0>", "<opt1>", "<opt2>", "<opt3>"],
+    "id": "<q1 to q10>",
+    "domain": "<one of the input domains>",
+    "text": "<question text, tailored to difficulty>",
+    "options": ["<option0>", "<option1>", "<option2>", "<option3>"],
     "correctIndex": <0|1|2|3>
   },
-  ... (q2..q10)
+  ... (9 more questions)
 ]
-Ensure valid JSON, no extra commentary.
+- Use the provided domains: ${domains.join(", ")}.
+- Adjust question complexity based on difficulty: "${difficulty}" (e.g., Easy, Medium, Hard).
+- Ensure questions are diverse across domains.
+- No extra commentary, only valid JSON.
             `,
           },
-          { role: "user", content: `Domains: ${domains.join(", ")}` },
+          {
+            role: "user",
+            content: `Domains: ${domains.join(
+              ", "
+            )}\nDifficulty: ${difficulty}`,
+          },
         ],
       });
 
-      const content = questions.choices[0].message.content;
+      const content = questionsResponse.choices[0].message.content;
       if (!content) {
         console.error("OpenAI response content is null");
-        return res.status(500).json({ error: "OpenAI response content is empty" });
+        return res
+          .status(500)
+          .json({ error: "OpenAI response content is empty" });
       }
 
-      let parsedQuestions;
+      let questions;
       try {
-        parsedQuestions = JSON.parse(content);
-      } catch (error: unknown) {
-        const message = error instanceof Error ? error.message : "Unknown error";
-        console.error("OpenAI parse error:", message);
-        return res.status(500).json({ error: `Failed to parse OpenAI response: ${message}` });
+        questions = JSON.parse(content);
+      } catch (error) {
+        console.error("OpenAI parse error:", error);
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
+        return res
+          .status(500)
+          .json({ error: `Failed to parse OpenAI response: ${errorMessage}` });
       }
 
-      if (!Array.isArray(parsedQuestions) || parsedQuestions.length !== 10) {
-        console.error("Invalid question count:", parsedQuestions.length);
-        return res.status(500).json({ error: "Expected 10 questions" });
+      if (!Array.isArray(questions) || questions.length !== 10) {
+        console.error("Invalid question count:", questions.length);
+        return res.status(500).json({ error: "Expected exactly 10 questions" });
       }
 
       console.log("Inserting quiz into Supabase");
-      const quizId = `${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
-      const { data, error } = await supabase.from("Quizzes").insert([
-        {
-          quiz_id: quizId,
-          player_address: playerAddress.toLowerCase(),
-          questions: parsedQuestions,
-          started_at: new Date().toISOString(),
-          correct_count: 0,
-          completed_at: null,
-        },
-      ]).select("quiz_id, num_questions");
-      console.log("Insert result:", data, error);
-
+      const { data, error } = await supabase
+        .from("Quizzes")
+        .insert([
+          {
+            quiz_id: quizId,
+            player_address: playerAddress.toLowerCase(),
+            domains,
+            difficulty,
+            questions,
+            started_at: new Date().toISOString(),
+            correct_count: 0,
+            completed_at: null,
+          },
+        ])
+        .select("quiz_id, num_questions");
 
       if (error) {
-        console.error("Supabase error:", error);
-        return res.status(500).json({ error: `Supabase insert failed: ${error.message}` });
+        console.error("Supabase insert error:", error);
+        return res
+          .status(500)
+          .json({ error: `Supabase insert failed: ${error.message}` });
       }
 
-      console.log("Generated quiz:", { quizId, numQuestions: 10 });
+      console.log("Quiz generated:", { quizId, numQuestions: 10 });
       res.json({ quizId, numQuestions: 10 });
     } catch (error) {
       console.error("Error in /generateQuiz:", error);
@@ -269,17 +312,43 @@ Ensure valid JSON, no extra commentary.
   });
 
   app.post("/verifyAnswer", async (req, res) => {
-    console.log("Received /verifyAnswer request:", req.body);
+    console.log("POST /verifyAnswer received:", req.body);
     try {
-      const { quizId, questionId, selectedIndex } = req.body;
-      if (typeof quizId !== "string" || typeof questionId !== "string") {
-        console.log("Invalid input received");
-        return res.status(400).json({ error: "quizId and questionId required" });
+      const { quizId, playerAddress, questionIndex, answer } = req.body;
+      if (
+        !quizId ||
+        !playerAddress ||
+        questionIndex === undefined ||
+        answer === undefined
+      ) {
+        console.error("Invalid input:", {
+          quizId,
+          playerAddress,
+          questionIndex,
+          answer,
+        });
+        return res
+          .status(400)
+          .json({
+            error: "quizId, playerAddress, questionIndex, and answer required",
+          });
+      }
+
+      const questionIdx = parseInt(questionIndex);
+      if (isNaN(questionIdx) || questionIdx < 0 || questionIdx >= 10) {
+        console.error("Invalid questionIndex:", questionIndex);
+        return res
+          .status(400)
+          .json({ error: "Invalid questionIndex: must be 0 to 9" });
       }
 
       if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_ROLE_KEY) {
         console.error("Missing environment variables");
-        return res.status(500).json({ error: "Server configuration error: Missing environment variables" });
+        return res
+          .status(500)
+          .json({
+            error: "Server configuration error: Missing environment variables",
+          });
       }
 
       const supabase = createClient(
@@ -290,30 +359,42 @@ Ensure valid JSON, no extra commentary.
       console.log("Fetching quiz from Supabase");
       const { data, error } = await supabase
         .from("Quizzes")
-        .select("questions, correct_count, num_questions, completed_at")
+        .select(
+          "questions, correct_count, num_questions, completed_at, player_address"
+        )
         .eq("quiz_id", quizId)
         .single();
 
       if (error) {
         console.error("Supabase fetch error:", error);
-        return res.status(500).json({ error: `Supabase fetch failed: ${error.message}` });
+        return res
+          .status(500)
+          .json({ error: `Supabase fetch failed: ${error.message}` });
+      }
+
+      if (data.player_address.toLowerCase() !== playerAddress.toLowerCase()) {
+        console.error("Player address mismatch:", { quizId, playerAddress });
+        return res
+          .status(403)
+          .json({ error: "Unauthorized: player address does not match" });
       }
 
       const questions = data.questions;
-      const question = questions.find((q: any) => q.id === questionId);
+      const question = questions[questionIdx];
       if (!question) {
-        console.error("Question not found:", questionId);
-        return res.status(404).json({ error: "Question not found" });
+        console.error("Question not found at index:", questionIdx);
+        return res
+          .status(404)
+          .json({ error: `Question not found at index ${questionIdx}` });
       }
 
-      const isCorrect = Number(selectedIndex) === question.correctIndex;
+      const isCorrect = parseInt(answer) === question.correctIndex;
       let newCorrectCount = data.correct_count;
       let newCompletedAt = data.completed_at;
 
       if (isCorrect) {
         newCorrectCount++;
-        const idxNum = parseInt(questionId.slice(1)); // "q7" → 7
-        if (idxNum === questions.length) {
+        if (questionIdx === questions.length - 1) {
           newCompletedAt = new Date().toISOString();
         }
       }
@@ -329,10 +410,12 @@ Ensure valid JSON, no extra commentary.
 
       if (updateError) {
         console.error("Supabase update error:", updateError);
-        return res.status(500).json({ error: `Supabase update failed: ${updateError.message}` });
+        return res
+          .status(500)
+          .json({ error: `Supabase update failed: ${updateError.message}` });
       }
 
-      console.log("Answer verified:", { quizId, questionId, isCorrect });
+      console.log("Answer verified:", { quizId, questionIndex, isCorrect });
       res.json({ isCorrect });
     } catch (error) {
       console.error("Error in /verifyAnswer:", error);
@@ -344,7 +427,9 @@ Ensure valid JSON, no extra commentary.
   try {
     app.listen(expressPort, () => {
       elizaLogger.log(`HTTP server started on port ${expressPort}`);
-      console.log(`Express server listening on http://localhost:${expressPort}`);
+      console.log(
+        `Express server listening on http://localhost:${expressPort}`
+      );
     });
   } catch (error) {
     console.error("Failed to start Express server:", error);

@@ -119,10 +119,10 @@ export function useChainQuiz() {
               console.log("[useChainQuiz] QuizGenerated log received:", log);
               // Arg names must match ABI: check your ABI event param names
               // e.g., event QuizGenerated(address indexed player, string quizId, uint8 numQuestions);
-              const player = log.args.player;
-              const quizId = log.args.quizId;
+              const player = (log as any).args.player;
+              const quizId = (log as any).args.quizId;
               // Ensure correct field name: often `numQuestions`, not `numQ`
-              const numQuestions = Number(log.args.numQuestions);
+              const numQuestions = Number((log as any).args.numQuestions);
               callback(player, quizId, numQuestions, log);
             });
           },
@@ -142,9 +142,9 @@ export function useChainQuiz() {
           onLogs: (logs) => {
             logs.forEach((log) => {
               console.log("[useChainQuiz] AnswerSubmitted log:", log);
-              const player = log.args.player;
-              const isCorrect = log.args.isCorrect;
-              const questionIndex = Number(log.args.questionIndex);
+              const player = (log as any).args.player;
+              const isCorrect = (log as any).args.isCorrect;
+              const questionIndex = Number((log as any).args.questionIndex);
               callback(player, isCorrect, questionIndex, log);
             });
           },
@@ -159,8 +159,8 @@ export function useChainQuiz() {
           onLogs: (logs) => {
             logs.forEach((log) => {
               console.log("[useChainQuiz] QuizCompleted log:", log);
-              const player = log.args.player;
-              const correctCount = Number(log.args.correctCount);
+              const player = (log as any).args.player;
+              const correctCount = Number((log as any).args.correctCount);
               callback(player, correctCount, log);
             });
           },
@@ -175,8 +175,8 @@ export function useChainQuiz() {
           onLogs: (logs) => {
             logs.forEach((log) => {
               console.log("[useChainQuiz] BonusAwarded log:", log);
-              const player = log.args.player;
-              const bonus = log.args.bonus;
+              const player = (log as any).args.player;
+              const bonus = (log as any).args.bonus;
               callback(player, bonus, log);
             });
           },
@@ -191,7 +191,7 @@ export function useChainQuiz() {
           onLogs: (logs) => {
             logs.forEach((log) => {
               console.log("[useChainQuiz] LeaderboardRefreshed log:", log);
-              const timestamp = log.args.timestamp;
+              const timestamp = (log as any).args.timestamp;
               callback(timestamp, log);
             });
           },
@@ -206,8 +206,8 @@ export function useChainQuiz() {
           onLogs: (logs) => {
             logs.forEach((log) => {
               console.log("[useChainQuiz] QuizCancelled log:", log);
-              const player = log.args.player;
-              const refund = log.args.refund;
+              const player = (log as any).args.player;
+              const refund = (log as any).args.refund;
               callback(player, refund, log);
             });
           },

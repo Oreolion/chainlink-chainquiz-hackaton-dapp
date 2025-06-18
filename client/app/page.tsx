@@ -35,7 +35,10 @@ class ErrorBoundary extends Component<
           </header>
           <main className="flex-1 p-6">
             <div className="text-center text-red-400">
-              <p>Something went wrong: {this.state.error?.message || "Unknown error"}</p>
+              <p>
+                Something went wrong:{" "}
+                {this.state.error?.message || "Unknown error"}
+              </p>
               <button
                 onClick={() => this.setState({ hasError: false, error: null })}
                 className="mt-4 px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded-lg text-white"
@@ -66,22 +69,128 @@ export default function Home() {
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [domains, setDomains] = useState<string[]>([]);
   const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
-  const [difficulty, setDifficulty] = useState<"Easy" | "Medium" | "Hard">("Medium");
+  const [difficulty, setDifficulty] = useState<"Easy" | "Medium" | "Hard">(
+    "Medium"
+  );
   const [quizId, setQuizId] = useState<string>("");
   const [vrfRequestId, setVrfRequestId] = useState<string>("");
   const [questions, setQuestions] = useState<any[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [timer, setTimer] = useState<number>(45);
-  const [entryState, setEntryState] = useState<"idle" | "staking" | "inQuiz" | "awaitingAnswer">("idle");
+  const [entryState, setEntryState] = useState<
+    "idle" | "staking" | "inQuiz" | "awaitingAnswer"
+  >("idle");
   const [reward, setReward] = useState<string>("");
+  const [rewardUSD, setRewardUSD] = useState<string>("");
   const [balance, setBalance] = useState<string>("0");
-  const [leaderboard, setLeaderboard] = useState<{ address: string; score: number }[]>([]);
+  const [leaderboard, setLeaderboard] = useState<
+    { address: string; score: number }[]
+  >([]);
 
+  useEffect(() => {
+    async function fetchInitialData() {
+      const { data, error } = await supabase.from("Quizzes").select("*");
+
+      console.log("Quizzes data:", data);
+      console.log("Error (if any):", error);
+    }
+
+    fetchInitialData();
+  }, []);
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Fetch leaderboard from Supabase
+  // Debug Fetch Questions
+  const debugFetchQuestions = useCallback(async (quizId: string) => {
+    console.log("debugFetchQuestions: Querying Supabase", {
+      quizId,
+      timestamp: new Date().toISOString(),
+    });
+    try {
+      const { data, error } = await supabase
+        .from("Quizzes")
+        .select("questions")
+        .eq("quiz_id", quizId)
+        .single();
+      if (error) {
+        console.error("debugFetchQuestions: Supabase error", {
+          message: error.message,
+          details: error.details,
+          timestamp: new Date().toISOString(),
+        });
+        throw error;
+      }
+      console.log("debugFetchQuestions: Fetched data", {
+        data,
+        questionCount: data.questions?.length,
+        timestamp: new Date().toISOString(),
+      });
+      if (!data.questions || !Array.isArray(data.questions)) {
+        console.error("debugFetchQuestions: Invalid questions format", {
+          questions: data.questions,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      console.log("debugFetchQuestions: Questions", {
+        questionCount: data.questions.length,
+        questions: data.questions,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      console.error("debugFetchQuestions: Error", {
+        message: err.message,
+        timestamp: new Date().toISOString(),
+      });
+    }
+  }, []);
+
+  // Fetch Balance
+  const fetchBalance = useCallback(async () => {
+    console.log("fetchBalance: Starting", {
+      address,
+      status,
+      tokenContract: !!tokenContract,
+      isValidAddress: isAddress(address ?? ""),
+      timestamp: new Date().toISOString(),
+    });
+    if (
+      !tokenContract ||
+      !address ||
+      status !== "connected" ||
+      !isAddress(address)
+    ) {
+      console.log("fetchBalance: Skipping invalid input", {
+        timestamp: new Date().toISOString(),
+      });
+      setBalance("0");
+      return;
+    }
+    try {
+      const raw = await tokenContract.read.balanceOf(address as Address);
+      const bal: bigint = typeof raw === "bigint" ? raw : BigInt(raw as string);
+      console.log("fetchBalance: Success", {
+        balance: formatEther(bal),
+        timestamp: new Date().toISOString(),
+      });
+      setBalance(formatEther(bal));
+    } catch (err: any) {
+      console.error("fetchBalance: Error", {
+        message: err.message,
+        timestamp: new Date().toISOString(),
+      });
+      setBalance("0");
+    }
+  }, [tokenContract, address, status]);
+
+  useEffect(() => {
+    fetchBalance();
+  }, [fetchBalance]);
+
+  // Fetch Leaderboard
   const fetchLeaderboard = useCallback(async () => {
-    console.log("fetchLeaderboard: Starting", { timestamp: new Date().toISOString() });
+    console.log("fetchLeaderboard: Starting", {
+      timestamp: new Date().toISOString(),
+    });
     try {
       const { data, error } = await supabase
         .from("Quizzes")
@@ -90,18 +199,23 @@ export default function Home() {
         .order("correct_count", { ascending: false })
         .limit(5);
       if (error) throw error;
-      console.log("fetchLeaderboard: Raw Supabase data", { data, timestamp: new Date().toISOString() });
+      console.log("fetchLeaderboard: Raw Supabase data", {
+        data,
+        timestamp: new Date().toISOString(),
+      });
       const arr = data.map((row: any) => ({
         address: row.player_address,
         score: row.correct_count * 10,
       }));
-      console.log("fetchLeaderboard: Success", { leaderboard: arr, timestamp: new Date().toISOString() });
+      console.log("fetchLeaderboard: Success", {
+        leaderboard: arr,
+        timestamp: new Date().toISOString(),
+      });
       setLeaderboard(arr);
       setLastUpdated(new Date().toLocaleTimeString());
     } catch (err: any) {
       console.error("fetchLeaderboard: Error", {
         message: err.message,
-        error: err,
         timestamp: new Date().toISOString(),
       });
       setLeaderboard([]);
@@ -120,8 +234,6 @@ export default function Home() {
         player,
         quizId: qId,
         numQuestions: numQ,
-        selectedDomains,
-        difficulty,
         txHash: event.transactionHash,
         blockNumber: Number(event.blockNumber),
         timestamp: new Date().toISOString(),
@@ -136,42 +248,21 @@ export default function Home() {
       }
       setQuizId(qId);
       setIsLoading(true);
-      const apiUrl = process.env.NEXT_PUBLIC_ELIZAOS_URL || "http://localhost:5000";
       try {
-        console.log("onQuizGenerated: Calling ELIZA agent", {
-          url: `${apiUrl}/generateQuiz`,
-          payload: { domains: selectedDomains, playerAddress: address, difficulty },
-          timestamp: new Date().toISOString(),
-        });
-        const resp = await axios.post(`${apiUrl}/generateQuiz`, {
-          domains: selectedDomains,
-          playerAddress: address,
-          difficulty,
-        });
-        console.log("onQuizGenerated: ELIZA agent response", {
-          quizId: resp.data.quizId,
-          numQuestions: resp.data.numQuestions,
-          status: resp.status,
-          response: resp.data,
-          timestamp: new Date().toISOString(),
-        });
-        if (!resp.data.quizId || typeof resp.data.numQuestions !== "number") {
-          throw new Error("Invalid quiz response: missing quizId or numQuestions");
-        }
         console.log("onQuizGenerated: Fetching questions from Supabase", {
-          quizId: resp.data.quizId,
+          quizId: qId,
           timestamp: new Date().toISOString(),
         });
         const { data, error } = await supabase
           .from("Quizzes")
           .select("questions")
-          .eq("quiz_id", resp.data.quizId)
+          .eq("quiz_id", qId)
           .single();
+        console.log("📝 Supabase questions for", qId, data?.questions);
         if (error) {
           console.error("onQuizGenerated: Supabase error", {
             message: error.message,
             details: error.details,
-            hint: error.hint,
             timestamp: new Date().toISOString(),
           });
           throw error;
@@ -184,7 +275,7 @@ export default function Home() {
           throw new Error("Invalid questions format from Supabase");
         }
         console.log("onQuizGenerated: Questions fetched", {
-          quizId: resp.data.quizId,
+          quizId: qId,
           questionCount: data.questions.length,
           questions: data.questions,
           timestamp: new Date().toISOString(),
@@ -199,35 +290,35 @@ export default function Home() {
           error: err.response?.data || err,
           timestamp: new Date().toISOString(),
         });
-        setErrorMessage(`Failed to generate quiz: ${err.response?.data?.error || err.message}`);
+        setErrorMessage(
+          `Failed to fetch quiz: ${err.response?.data?.error || err.message}`
+        );
         setEntryState("idle");
       } finally {
         setIsLoading(false);
       }
     },
-    [address, selectedDomains, difficulty]
+    [address, quizContract]
   );
 
   const onAnswerSubmitted = useCallback(
     (logs: any[]) => {
       const event = logs[0];
       const player: string = event.args.player;
-      const qId: string = event.args.quizId;
       const isCorrect: boolean = event.args.isCorrect;
+      const questionIndex: number = Number(event.args.questionIndex);
       console.log("onAnswerSubmitted: Event received", {
         player,
-        quizId: qId,
         isCorrect,
+        questionIndex,
         txHash: event.transactionHash,
         blockNumber: Number(event.blockNumber),
         timestamp: new Date().toISOString(),
       });
-      if (player.toLowerCase() !== address?.toLowerCase() || qId !== quizId) {
+      if (player.toLowerCase() !== address?.toLowerCase()) {
         console.log("onAnswerSubmitted: Skipping, mismatch", {
           player,
           address,
-          quizId,
-          qId,
           timestamp: new Date().toISOString(),
         });
         return;
@@ -240,100 +331,55 @@ export default function Home() {
         setTimer(45);
       }
     },
-    [address, quizId, questions.length]
+    [address, questions.length]
   );
 
   const onQuizCompleted = useCallback(
     (logs: any[]) => {
       const event = logs[0];
       const player: string = event.args.player;
-      const qId: string = event.args.quizId;
       const score: number = Number(event.args.correctCount);
+      const rewardUSD: number = Number(event.args.rewardUSD);
       console.log("onQuizCompleted: Event received", {
         player,
-        quizId: qId,
         score,
+        rewardUSD,
         txHash: event.transactionHash,
         blockNumber: Number(event.blockNumber),
         timestamp: new Date().toISOString(),
       });
-      if (player.toLowerCase() !== address?.toLowerCase() || qId !== quizId) {
+      if (player.toLowerCase() !== address?.toLowerCase()) {
         console.log("onQuizCompleted: Skipping, mismatch", {
           player,
           address,
-          quizId,
-          qId,
           timestamp: new Date().toISOString(),
         });
         return;
       }
       setReward(score.toString());
+      setRewardUSD(rewardUSD.toString());
       setEntryState("awaitingAnswer");
       fetchLeaderboard();
     },
-    [address, quizId, fetchLeaderboard]
-  );
-
-  const onBonusAwarded = useCallback(
-    (logs: any[]) => {
-      const event = logs[0];
-      const player: string = event.args.player;
-      const qId: string = event.args.quizId;
-      const amount: number = Number(event.args.amount);
-      console.log("onBonusAwarded: Event received", {
-        player,
-        quizId: qId,
-        amount,
-        txHash: event.transactionHash,
-        blockNumber: Number(event.blockNumber),
-        timestamp: new Date().toISOString(),
-      });
-      if (player.toLowerCase() !== address?.toLowerCase() || qId !== quizId) {
-        console.log("onBonusAwarded: Skipping, mismatch", {
-          player,
-          address,
-          quizId,
-          qId,
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-      setReward((r) => (parseInt(r || "0") + amount).toString());
-    },
-    [address, quizId]
-  );
-
-  const onLeaderboardRefreshed = useCallback(
-    (logs: any[]) => {
-      const event = logs[0];
-      console.log("onLeaderboardRefreshed: Event received", {
-        txHash: event.transactionHash,
-        blockNumber: Number(event.blockNumber),
-        timestamp: new Date().toISOString(),
-      });
-      fetchLeaderboard();
-    },
-    [fetchLeaderboard]
+    [address, fetchLeaderboard]
   );
 
   const onQuizCancelled = useCallback(
     (logs: any[]) => {
       const event = logs[0];
       const player: string = event.args.player;
-      const qId: string = event.args.quizId;
+      const refundAmount: number = Number(event.args.refundAmount);
       console.log("onQuizCancelled: Event received", {
         player,
-        quizId: qId,
+        refundAmount,
         txHash: event.transactionHash,
         blockNumber: Number(event.blockNumber),
         timestamp: new Date().toISOString(),
       });
-      if (player.toLowerCase() !== address?.toLowerCase() || qId !== quizId) {
+      if (player.toLowerCase() !== address?.toLowerCase()) {
         console.log("onQuizCancelled: Skipping, mismatch", {
           player,
           address,
-          quizId,
-          qId,
           timestamp: new Date().toISOString(),
         });
         return;
@@ -343,8 +389,9 @@ export default function Home() {
       setQuestions([]);
       setCurrentIndex(0);
       setReward("");
+      setRewardUSD("");
     },
-    [address, quizId]
+    [address]
   );
 
   const onVRFRequestInitiated = useCallback(
@@ -368,13 +415,13 @@ export default function Home() {
         return;
       }
       setVrfRequestId(requestId);
-      quizContract!.write.checkVRFAndGenerateQuiz(Number(requestId));
     },
-    [address, quizContract]
+    [address]
   );
 
   // Event Subscriptions
-  const chainQuizAddress = process.env.NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
+  const chainQuizAddress = process.env
+    .NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
 
   useWatchContractEvent({
     address: chainQuizAddress,
@@ -403,22 +450,6 @@ export default function Home() {
   useWatchContractEvent({
     address: chainQuizAddress,
     abi: ChainQuizABI,
-    eventName: "BonusAwarded",
-    onLogs: onBonusAwarded,
-    enabled: !!quizContract && !!address && status === "connected",
-  });
-
-  useWatchContractEvent({
-    address: chainQuizAddress,
-    abi: ChainQuizABI,
-    eventName: "LeaderboardRefreshed",
-    onLogs: onLeaderboardRefreshed,
-    enabled: !!quizContract && !!address && status === "connected",
-  });
-
-  useWatchContractEvent({
-    address: chainQuizAddress,
-    abi: ChainQuizABI,
     eventName: "QuizCancelled",
     onLogs: onQuizCancelled,
     enabled: !!quizContract && !!address && status === "connected",
@@ -429,14 +460,25 @@ export default function Home() {
     abi: ChainQuizABI,
     eventName: "VRFRequestInitiated",
     onLogs: onVRFRequestInitiated,
-    enabled: !!quizContract && !!address && status === "connected",    
+    enabled: !!quizContract && !!address && status === "connected",
   });
 
   // Start Quiz
   const startQuiz = useCallback(async () => {
     // 1️⃣ Basic validation
-    if (!quizContract || !tokenContract || selectedDomains.length < 5 || !address) {
-      setErrorMessage("Select at least 5 domains, choose a difficulty & connect your wallet.");
+    if (
+      !quizContract ||
+      !tokenContract ||
+      !publicClient ||
+      selectedDomains.length < 5 ||
+      !address
+    ) {
+      setErrorMessage(
+        "Select at least 5 domains, choose a difficulty & connect your wallet."
+      );
+      console.log("startQuiz: Invalid input", {
+        timestamp: new Date().toISOString(),
+      });
       return;
     }
     setErrorMessage("");
@@ -445,31 +487,141 @@ export default function Home() {
 
     try {
       // 2️⃣ Prepare params
-      const quizAddr = process.env.NEXT_PUBLIC_CHAINQUIZ_ADDRESS!;
-      const entryFee = BigInt(process.env.NEXT_PUBLIC_ENTRY_FEE_IN_QUIZ!);
+      const quizAddr =
+        process.env.NEXT_PUBLIC_CHAINQUIZ_ADDRESS ??
+        "0xB7E0a11c36C147F89f161DE392727C4A7a99761F";
+      const entryFee = BigInt(
+        process.env.NEXT_PUBLIC_ENTRY_FEE_IN_QUIZ ?? "10000000000000000"
+      );
       const diffMap = { Easy: 0, Medium: 1, Hard: 2 } as const;
       const diffIndex = diffMap[difficulty];
 
-      console.log("🚀 startQuiz → Approving token", { quizAddr, entryFee });
-      const approveHash = await tokenContract.write.approve([quizAddr, entryFee]);
-      console.log("✍️  Approve tx sent:", approveHash);
-
-      // 3️⃣ Wait for the approve to be mined
-      const receipt1 = await publicClient.waitForTransactionReceipt({ hash: approveHash });
-      console.log("✅ Approve confirmed:", {
-        status: receipt1.status,
-        gasUsed: receipt1.gasUsed.toString()
+      console.log("🚀 startQuiz → Config", {
+        quizAddr,
+        entryFee: entryFee.toString(),
+        selectedDomains,
+        diffIndex,
+        address,
+        timestamp: new Date().toISOString(),
       });
 
-      // 4️⃣ Call startQuiz with BOTH domains & difficulty
-      console.log("🚀 startQuiz → submitting on-chain", { selectedDomains, diffIndex });
-      const startHash = await quizContract.write.startQuiz(selectedDomains);
-      console.log("✍️  startQuiz tx sent:", startHash);
+      // 3️⃣ Check $QUIZ balance
+      const balance = await tokenContract.read.balanceOf(address);
+      console.log("startQuiz: Balance", {
+        balance: balance.toString(),
+        timestamp: new Date().toISOString(),
+      });
+      if (balance < entryFee) {
+        throw new Error(
+          "Insufficient $QUIZ balance. Please acquire more tokens."
+        );
+      }
 
-      // all further UX updates will come via your on-chain event subscribers
-    } catch (err: any) {
+      // 4️⃣ Check allowance
+      const allowance = await tokenContract.read.allowance(address, quizAddr);
+      console.log("startQuiz: Allowance", {
+        allowance: allowance.toString(),
+        timestamp: new Date().toISOString(),
+      });
+      if (allowance < entryFee) {
+        console.log("🚀 startQuiz → Approving token", {
+          quizAddr,
+          entryFee: entryFee.toString(),
+          timestamp: new Date().toISOString(),
+        });
+        const approveHash = await tokenContract.write.approve([
+          quizAddr,
+          entryFee,
+        ]);
+        console.log("✍️ Approve tx sent:", approveHash, {
+          timestamp: new Date().toISOString(),
+        });
+        const receipt1 = await publicClient.waitForTransactionReceipt({
+          hash: approveHash,
+        });
+        console.log("✅ Approve confirmed:", {
+          status: receipt1.status,
+          gasUsed: receipt1.gasUsed.toString(),
+          transactionHash: approveHash,
+          timestamp: new Date().toISOString(),
+        });
+        if (receipt1.status !== "success") {
+          throw new Error("Approval transaction failed.");
+        }
+        // Verify allowance after approval
+        const newAllowance = await tokenContract.read.allowance(
+          address,
+          quizAddr
+        );
+        console.log("startQuiz: New Allowance", {
+          newAllowance: newAllowance.toString(),
+          timestamp: new Date().toISOString(),
+        });
+        if (newAllowance < entryFee) {
+          throw new Error("Allowance approval failed to update.");
+        }
+      }
+
+      // 5️⃣ Call startQuiz
+      console.log("🚀 startQuiz → Submitting on-chain", {
+        selectedDomains,
+        diffIndex,
+        timestamp: new Date().toISOString(),
+      });
+      const startHash = await quizContract.write.startQuiz(selectedDomains); // Adjust if difficulty is needed
+      console.log("✍️ startQuiz tx sent:", startHash, {
+        timestamp: new Date().toISOString(),
+      });
+      const receipt2 = await publicClient.waitForTransactionReceipt({
+        hash: startHash,
+      });
+      console.log("✅ startQuiz confirmed:", {
+        status: receipt2.status,
+        gasUsed: receipt2.gasUsed.toString(),
+        transactionHash: startHash,
+        timestamp: new Date().toISOString(),
+      });
+      if (receipt2.status !== "success") {
+        // Decode revert reason
+        let revertReason = "Unknown reason";
+        try {
+          const errorData = receipt2.logs.find(
+            (log) => log.topics[0] === "0x08c379a0"
+          ); // Error(string)
+          if (errorData) {
+            const decoded = publicClient.abiDecoder.decodeErrorResult({
+              abi: [
+                { type: "error", name: "Error", inputs: [{ type: "string" }] },
+              ],
+              data: errorData.data,
+            });
+            revertReason = decoded.args[0];
+          }
+        } catch (decodeErr) {
+          console.error("Failed to decode revert reason:", decodeErr);
+        }
+        throw new Error(`startQuiz transaction reverted: ${revertReason}`);
+      }
+
+      // All further UX updates will come via on-chain event subscribers
+    } catch (err: Error) {
       console.error("❌ startQuiz error:", err);
-      setErrorMessage(`Failed to start quiz: ${err.message}`);
+      let errorMsg = `Failed to start quiz: ${err.message}`;
+      if (err.message.includes("reverted")) {
+        errorMsg = `Transaction reverted: ${
+          err.message.split("reverted: ")[1] || "Unknown reason"
+        }`;
+      } else if (err.message.includes("rejected")) {
+        errorMsg = "Transaction rejected by user.";
+      } else if (err.message.includes("insufficient funds")) {
+        errorMsg = "Insufficient ETH for gas fees.";
+      }
+      console.error("startQuiz: Error", {
+        message: errorMsg,
+        details: err,
+        timestamp: new Date().toISOString(),
+      });
+      setErrorMessage(errorMsg);
       setEntryState("idle");
     } finally {
       setIsLoading(false);
@@ -480,12 +632,18 @@ export default function Home() {
     publicClient,
     selectedDomains,
     difficulty,
-    address
+    address,
   ]);
 
   // Submit Answer
   const submitAnswer = useCallback(
     async (selectedIndex: number) => {
+      console.log("submitAnswer: Starting", {
+        quizId,
+        questionId: questions[currentIndex]?.id,
+        selectedIndex,
+        timestamp: new Date().toISOString(),
+      });
       if (!quizContract || !address || status !== "connected" || !quizId) {
         console.error("submitAnswer: Invalid input", {
           quizContract: !!quizContract,
@@ -496,18 +654,17 @@ export default function Home() {
         });
         return;
       }
-      console.log("submitAnswer: Submitting", {
-        quizId,
-        questionId: questions[currentIndex]?.id,
-        selectedIndex,
-        timestamp: new Date().toISOString(),
-      });
       setIsLoading(true);
       try {
-        const apiUrl = process.env.NEXT_PUBLIC_ELIZAOS_URL || "http://localhost:5000";
+        const apiUrl =
+          process.env.NEXT_PUBLIC_ELIZAOS_URL || "http://localhost:5000";
         console.log("submitAnswer: Verifying answer with ELIZA", {
           url: `${apiUrl}/verifyAnswer`,
-          payload: { quizId, questionId: questions[currentIndex]?.id, selectedIndex },
+          payload: {
+            quizId,
+            questionId: questions[currentIndex]?.id,
+            selectedIndex,
+          },
           timestamp: new Date().toISOString(),
         });
         const resp = await axios.post(`${apiUrl}/verifyAnswer`, {
@@ -516,23 +673,9 @@ export default function Home() {
           selectedIndex,
         });
         console.log("submitAnswer: ELIZA verify response", {
-          isCorrect: resp.data.isCorrect,
           status: resp.status,
-          response: resp.data,
           timestamp: new Date().toISOString(),
         });
-        if (!resp.data.isCorrect) {
-          console.log("submitAnswer: Incorrect answer", {
-            quizId,
-            questionId: questions[currentIndex]?.id,
-            selectedIndex,
-            timestamp: new Date().toISOString(),
-          });
-          setErrorMessage("Incorrect answer. Try again!");
-          setTimer(45);
-          setEntryState("inQuiz");
-          return;
-        }
         console.log("submitAnswer: Submitting on-chain", {
           selectedIndex,
           timestamp: new Date().toISOString(),
@@ -542,36 +685,20 @@ export default function Home() {
           txHash: submitHash,
           timestamp: new Date().toISOString(),
         });
-        if (publicClient) {
-          console.log("submitAnswer: Waiting for transaction", {
-            txHash: submitHash,
-            timestamp: new Date().toISOString(),
-          });
-          const receipt = await publicClient.waitForTransactionReceipt({
-            hash: submitHash,
-          });
-          console.log("submitAnswer: Transaction confirmed", {
-            txHash: submitHash,
-            receipt: {
-              status: receipt.status,
-              gasUsed: receipt.gasUsed.toString(),
-              blockNumber: receipt.blockNumber.toString(),
-            },
-            timestamp: new Date().toISOString(),
-          });
-        }
+        const receipt = await publicClient?.waitForTransactionReceipt({
+          hash: submitHash,
+        });
+        console.log("submitAnswer: Transaction confirmed", {
+          txHash: submitHash,
+          status: receipt?.status,
+          gasUsed: receipt?.gasUsed.toString(),
+          timestamp: new Date().toISOString(),
+        });
         if (currentIndex < questions.length - 1) {
           console.log("submitAnswer: Advancing to next question", {
             currentIndex,
             nextIndex: currentIndex + 1,
             totalQuestions: questions.length,
-            timestamp: new Date().toISOString(),
-          });
-          setCurrentIndex(currentIndex + 1);
-          setTimer(45);
-        } else {
-          console.log("submitAnswer: Finishing quiz", {
-            quizId,
             timestamp: new Date().toISOString(),
           });
         }
@@ -581,71 +708,32 @@ export default function Home() {
           error: err.response?.data || err,
           timestamp: new Date().toISOString(),
         });
-        setErrorMessage(`Failed to submit answer: ${err.response?.data?.error || err.message}`);
+        setErrorMessage(
+          `Failed to submit answer: ${err.response?.data?.error || err.message}`
+        );
         setEntryState("inQuiz");
-        setTimer(45);
+        setTimer(60);
       } finally {
         setIsLoading(false);
       }
     },
-    [quizContract, address, status, quizId, questions, currentIndex, publicClient]
+    [
+      quizContract,
+      address,
+      status,
+      quizId,
+      questions,
+      currentIndex,
+      publicClient,
+    ]
   );
-
-  // Request Random Challenge
-  const requestChallenge = useCallback(async () => {
-    if (!quizContract || !address || status !== "connected") {
-      console.error("requestChallenge: Invalid input", {
-        quizContract: !!quizContract,
-        address: !!address,
-        status,
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    }
-    console.log("requestChallenge: Starting", {
-      timestamp: new Date().toISOString(),
-    });
-    setEntryState("awaitingAnswer");
-    setIsLoading(true);
-    try {
-      const challengeHash = await quizContract.write.requestRandomChallenge();
-      console.log("requestChallenge: Transaction sent", {
-        txHash: challengeHash,
-        timestamp: new Date().toISOString(),
-      });
-      if (publicClient) {
-        console.log("requestChallenge: Waiting for transaction", {
-          txHash: challengeHash,
-          timestamp: new Date().toISOString(),
-        });
-        const receipt = await publicClient.waitForTransactionReceipt({
-          hash: challengeHash,
-        });
-        console.log("requestChallenge: Transaction confirmed", {
-          txHash: challengeHash,
-          receipt: {
-            status: receipt.status,
-            gasUsed: receipt.gasUsed.toString(),
-            blockNumber: receipt.blockNumber.toString(),
-          },
-          timestamp: new Date().toISOString(),
-        });
-      }
-    } catch (err: any) {
-      console.error("requestChallenge: Error", {
-        message: err.message,
-        error: err,
-        timestamp: new Date().toISOString(),
-      });
-      setErrorMessage(`Failed to request challenge: ${err.message}`);
-    } finally {
-      setEntryState("idle");
-      setIsLoading(false);
-    }
-  }, [quizContract, address, status, publicClient]);
 
   // Cancel Quiz
   const cancelQuiz = useCallback(async () => {
+    console.log("cancelQuiz: Starting", {
+      quizId,
+      timestamp: new Date().toISOString(),
+    });
     if (!quizContract || !address || status !== "connected") {
       console.error("cancelQuiz: Invalid input", {
         quizContract: !!quizContract,
@@ -655,40 +743,25 @@ export default function Home() {
       });
       return;
     }
-    console.log("cancelQuiz: Starting", {
-      quizId,
-      timestamp: new Date().toISOString(),
-    });
     setEntryState("awaitingAnswer");
     setIsLoading(true);
     try {
       const cancelHash = await quizContract.write.cancelQuiz();
       console.log("cancelQuiz: Transaction sent", {
-        txHash: cancelHash,
+        cancelHash,
         timestamp: new Date().toISOString(),
       });
-      if (publicClient) {
-        console.log("cancelQuiz: Waiting for transaction", {
-          txHash: cancelHash,
-          timestamp: new Date().toISOString(),
-        });
-        const receipt = await publicClient.waitForTransactionReceipt({
-          hash: cancelHash,
-        });
-        console.log("cancelQuiz: Transaction confirmed", {
-          txHash: cancelHash,
-          receipt: {
-            status: receipt.status,
-            gasUsed: receipt.gasUsed.toString(),
-            blockNumber: receipt.blockNumber.toString(),
-          },
-          timestamp: new Date().toISOString(),
-        });
-      }
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: cancelHash,
+      });
+      console.log("cancelQuiz: Transaction confirmed", {
+        cancelHash,
+        status: receipt.status,
+        timestamp: new Date().toISOString(),
+      });
     } catch (err: any) {
       console.error("cancelQuiz: Error", {
         message: err.message,
-        error: err,
         timestamp: new Date().toISOString(),
       });
       setErrorMessage(`Failed to cancel quiz: ${err.message}`);
@@ -705,12 +778,6 @@ export default function Home() {
     });
     setIsMounted(true);
     setLastUpdated(new Date().toLocaleTimeString());
-  }, []);
-
-  useEffect(() => {
-    console.log("Domains effect: Setting domains", {
-      timestamp: new Date().toISOString(),
-    });
     setDomains([
       "DeFi",
       "Oracles",
@@ -733,53 +800,10 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    const fetchBalance = async () => {
-      console.log("fetchBalance 📋", {
-        address,
-        status,
-        tokenContract: !!tokenContract,
-        isValidAddress: isAddress(address ?? ""),
-        timestamp: new Date().toISOString(),
-      });
-
-      // 1️⃣ Guard: address must be a string and valid EVM address
-      if (typeof address !== "string" || status !== "connected" || !tokenContract || !isAddress(address)) {
-        console.log("fetchBalance ⏭ skipping invalid input");
-        setBalance("0");
-        return;
-      }
-
-      try {
-        // 2️⃣ Call with a string, not an array!
-        //    TS error “`0x${string}`[] not assignable to string” goes away here.
-        const raw = await tokenContract.read.balanceOf(address as Address);
-
-        console.log("fetchBalance raw return:", {
-          typeofRaw: typeof raw,
-          raw,
-          timestamp: new Date().toISOString(),
-        });
-
-        // 3️⃣ Normalize to bigint in case raw isn’t typed exactly
-        const bal: bigint =
-          typeof raw === "bigint" ? raw : BigInt(raw as unknown as string);
-
-        console.log("fetchBalance normalized bigint:", {
-          bal,
-          timestamp: new Date().toISOString(),
-        });
-
-        // 4️⃣ Format & set
-        setBalance(formatEther(bal));
-        console.log("fetchBalance ✅ success", { balance: formatEther(bal) });
-      } catch (err: any) {
-        console.error("fetchBalance ❌ error", err);
-        setBalance("0");
-      }
-    };
-
-    fetchBalance();
-  }, [address, status, tokenContract]);
+    if (questions.length) {
+      console.log("🏗️ questions state updated:", questions);
+    }
+  }, [questions]);
 
   useEffect(() => {
     console.log("Leaderboard effect: Starting periodic fetch", {
@@ -838,7 +862,8 @@ export default function Home() {
         </header>
         <main className="flex-1 p-6">
           <p className="text-center text-red-400">
-            Error: Contract addresses or RPC URL not configured. Check NEXT_PUBLIC_PROPERTIES in .env.local.
+            Error: Contract addresses or RPC URL not configured. Check
+            NEXT_PUBLIC_PROPERTIES in .env.local.
           </p>
         </main>
       </div>
@@ -870,7 +895,9 @@ export default function Home() {
           {/* Wallet & Balance */}
           {status === "connected" && address && (
             <div className="flex justify-end gap-4">
-              <p className="text-sm text-gray-400 truncate max-w-[12rem]">{address}</p>
+              <p className="text-sm text-gray-400 truncate max-w-[12rem]">
+                {address}
+              </p>
               <p className="text-sm text-blue-400">{balance} QUIZ</p>
             </div>
           )}
@@ -878,7 +905,9 @@ export default function Home() {
           {/* Domain Selection, Difficulty, & Start Quiz */}
           {status === "connected" && address && entryState === "idle" && (
             <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
-              <h2 className="text-xl font-semibold text-gray-100">Select 5+ Domains</h2>
+              <h2 className="text-xl font-semibold text-gray-100">
+                Select 5+ Domains
+              </h2>
               <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
                 {domains.map((d) => (
                   <button
@@ -898,12 +927,16 @@ export default function Home() {
                   </button>
                 ))}
               </div>
-              <h2 className="text-xl font-semibold text-gray-100">Select Difficulty</h2>
+              <h2 className="text-xl font-semibold text-gray-100">
+                Select Difficulty
+              </h2>
               <div className="flex gap-3">
                 {["Easy", "Medium", "Hard"].map((diff) => (
                   <button
                     key={diff}
-                    onClick={() => setDifficulty(diff as "Easy" | "Medium" | "Hard")}
+                    onClick={() =>
+                      setDifficulty(diff as "Easy" | "Medium" | "Hard")
+                    }
                     className={`p-2 rounded-lg border text-sm ${
                       difficulty === diff
                         ? "bg-blue-500 text-white border-blue-500"
@@ -916,7 +949,11 @@ export default function Home() {
               </div>
               <button
                 onClick={startQuiz}
-                disabled={selectedDomains.length < 5 || entryState !== "idle" || isLoading}
+                disabled={
+                  selectedDomains.length < 5 ||
+                  entryState !== "idle" ||
+                  isLoading
+                }
                 className="mt-4 w-full p-3 bg-blue-500 hover:bg-blue-600 rounded-xl text-lg font-semibold text-white disabled:bg-gray-600 disabled:cursor-not-allowed relative"
               >
                 {isLoading && (
@@ -927,72 +964,72 @@ export default function Home() {
                 <span className={isLoading ? "opacity-0" : ""}>
                   {entryState === "staking"
                     ? "Staking 10 QUIZ..."
-                    : `Start Quiz (${selectedDomains.length} Domains, ${difficulty}, ${questions.length || 10} Questions)`}
+                    : `Start Quiz (${selectedDomains.length} Domains, ${difficulty})`}
                 </span>
               </button>
             </div>
           )}
 
           {/* Quiz Questions */}
-          {status === "connected" && address && entryState === "inQuiz" && questions.length > 0 && (
-            <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
-              <h2 className="text-xl font-semibold text-gray-100">
-                Question {currentIndex + 1}/{questions.length}
-              </h2>
-              <p className="text-base text-gray-200">{questions[currentIndex]?.text || "Loading..."}</p>
-              <div className="grid grid-cols-1 gap-2">
-                {Array.isArray(questions[currentIndex]?.options) ? (
-                  questions[currentIndex].options.map((opt: string, idx: number) => (
-                    <button
-                      key={idx}
-                      onClick={() => submitAnswer(idx)}
-                      disabled={isLoading}
-                      className="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-left text-sm text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed relative"
-                    >
-                      {isLoading && (
-                        <div className="absolute inset-0 flex items-center justify-center">
-                          <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-400"></div>
-                        </div>
-                      )}
-                      <span className={isLoading ? "opacity-0" : ""}>{opt}</span>
-                    </button>
-                  ))
-                ) : (
-                  <p className="text-sm text-red-400">No options available</p>
-                )}
+          {status === "connected" &&
+            address &&
+            entryState === "inQuiz" &&
+            questions.length > 0 && (
+              <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
+                <h2 className="text-xl font-semibold text-gray-100">
+                  Question {currentIndex + 1}/{questions.length}
+                </h2>
+                <p className="text-base text-gray-200">
+                  {questions[currentIndex]?.text || "Loading..."}
+                </p>
+                <div className="grid grid-cols-1 gap-2">
+                  {Array.isArray(questions[currentIndex]?.options) ? (
+                    questions[currentIndex].options.map(
+                      (opt: string, idx: number) => (
+                        <button
+                          key={idx}
+                          onClick={() => submitAnswer(idx)}
+                          disabled={isLoading}
+                          className="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-left text-sm text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed relative"
+                        >
+                          {isLoading && (
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-400"></div>
+                            </div>
+                          )}
+                          <span className={isLoading ? "opacity-0" : ""}>
+                            {opt}
+                          </span>
+                        </button>
+                      )
+                    )
+                  ) : (
+                    <p className="text-sm text-red-400">No options available</p>
+                  )}
+                </div>
+                <div className="flex justify-between items-center">
+                  <p className="text-sm text-gray-400">Time Left: {timer}s</p>
+                  <button
+                    onClick={() => submitAnswer(255)}
+                    className="px-2 py-1 text-xs text-blue-400 hover:text-blue-300"
+                  >
+                    Skip (Timeout)
+                  </button>
+                </div>
               </div>
-              <div className="flex justify-between items-center">
-                <p className="text-sm text-gray-400">Time Left: {timer}s</p>
-                <button
-                  onClick={() => submitAnswer(255)}
-                  className="px-2 py-1 text-xs text-blue-400 hover:text-blue-300"
-                >
-                  Skip (Timeout)
-                </button>
-              </div>
-            </div>
-          )}
+            )}
 
           {/* Quiz Completion */}
-          {status === "connected" && address && entryState === "awaitingAnswer" && (
-            <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4 text-center">
-              <h2 className="text-xl font-semibold text-gray-100">Quiz Completed!</h2>
-              <p className="text-base text-gray-200">
-                You earned {reward || "0"} QUIZ
-              </p>
-              <div className="flex justify-center gap-3 mt-3">
-                <button
-                  onClick={requestChallenge}
-                  disabled={isLoading}
-                  className="p-2 bg-purple-500 hover:bg-purple-600 rounded-lg text-sm text-white disabled:bg-gray-600 disabled:cursor-not-allowed relative"
-                >
-                  {isLoading && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
-                    </div>
-                  )}
-                  <span className={isLoading ? "opacity-0" : ""}>Request Random Challenge</span>
-                </button>
+          {status === "connected" &&
+            address &&
+            entryState === "awaitingAnswer" && (
+              <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4 text-center">
+                <h2 className="text-xl font-semibold text-gray-100">
+                  Quiz Completed!
+                </h2>
+                <p className="text-base text-gray-200">
+                  You earned {reward || "0"} QUIZ (~${rewardUSD || "0"} USD)
+                </p>
                 <button
                   onClick={cancelQuiz}
                   disabled={isLoading}
@@ -1003,29 +1040,47 @@ export default function Home() {
                       <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
                     </div>
                   )}
-                  <span className={isLoading ? "opacity-0" : ""}>Cancel Quiz & Refund</span>
+                  <span className={isLoading ? "opacity-0" : ""}>
+                    Cancel Quiz & Refund
+                  </span>
                 </button>
               </div>
-            </div>
-          )}
+            )}
+
+          {/* Debug Tools */}
+          <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
+            <h2 className="text-xl font-semibold text-gray-100">Debug Tools</h2>
+            <button
+              onClick={() =>
+                debugFetchQuestions(quizId || `temp_${vrfRequestId}`)
+              }
+              className="p-2 bg-yellow-400 hover:bg-yellow-500 rounded-lg text-sm text-gray-900"
+            >
+              Debug Fetch Questions
+            </button>
+          </div>
 
           {/* Leaderboard */}
           <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
-            <h2 className="text-xl font-semibold text-gray-100">Leaderboard (Top 5)</h2>
+            <h2 className="text-xl font-semibold text-gray-100">
+              Leaderboard (Top 5)
+            </h2>
             <table className="w-full text-left text-gray-200 text-sm">
               <thead>
                 <tr className="border-b border-gray-600">
-                  <th className="px-2 py-1">Rank</th>
-                  <th className="px-2 py-1">Address</th>
-                  <th className="px-2 py-1">Score</th>
+                  <th className="px-2 py-3">Rank</th>
+                  <th className="px-2 py-3">Address</th>
+                  <th className="px-2 py-3">Score</th>
                 </tr>
               </thead>
               <tbody>
                 {leaderboard.map((row, i) => (
                   <tr key={row.address} className="border-b border-gray-700">
-                    <td className="px-2 py-1">{i + 1}</td>
-                    <td className="px-2 py-1 truncate max-w-[150px]">{row.address}</td>
-                    <td className="px-2 py-1">{row.score}</td>
+                    <td className="px-2 py-3">{i + 1}</td>
+                    <td className="px-2 py-3 truncate max-w-[150px]">
+                      {row.address}
+                    </td>
+                    <td className="px-2 py-3">{row.score}</td>
                   </tr>
                 ))}
               </tbody>

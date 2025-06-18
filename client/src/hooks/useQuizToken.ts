@@ -2,8 +2,11 @@ import { useAccount, useWriteContract } from "wagmi";
 import { createPublicClient, http } from "viem";
 import { baseSepolia } from "wagmi/chains";
 import QuizTokenABIJson from "../abis/QuizTokenABI.json";
+import { Address } from "viem";
 
-const QUIZ_TOKEN_ADDRESS = process.env.NEXT_PUBLIC_QUIZTOKEN_ADDRESS as `0x${string}` | undefined;
+const QUIZ_TOKEN_ADDRESS = process.env.NEXT_PUBLIC_QUIZTOKEN_ADDRESS as
+  | `0x${string}`
+  | undefined;
 const RPC_URL = process.env.NEXT_PUBLIC_BASE_RPC_URL as string | undefined;
 
 // Extract the ABI array, handling wrapped formats
@@ -20,7 +23,9 @@ export function useQuizToken() {
   const { writeContractAsync } = useWriteContract();
 
   if (!QUIZ_TOKEN_ADDRESS || !QUIZ_TOKEN_ADDRESS.startsWith("0x")) {
-    console.error("NEXT_PUBLIC_QUIZTOKEN_ADDRESS is not defined or invalid in .env.local");
+    console.error(
+      "NEXT_PUBLIC_QUIZTOKEN_ADDRESS is not defined or invalid in .env.local"
+    );
     return null;
   }
 
@@ -60,7 +65,14 @@ export function useQuizToken() {
           abi: QuizTokenABI,
           functionName: "balanceOf",
           args: [addr],
-        }),
+        }) as Promise<bigint>,
+      allowance: async (owner: string, spender: string) =>
+        publicClient.readContract({
+          address: QUIZ_TOKEN_ADDRESS,
+          abi: QuizTokenABI,
+          functionName: "allowance",
+          args: [owner, spender],
+        }) as Promise<bigint>,
     },
   };
 }
