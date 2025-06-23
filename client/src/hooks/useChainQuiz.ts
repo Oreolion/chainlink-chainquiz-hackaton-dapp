@@ -1,42 +1,32 @@
-// src/hooks/useChainQuiz.js
-
 import { useAccount, useWriteContract } from "wagmi";
 import { createPublicClient, http } from "viem";
 import { baseSepolia } from "wagmi/chains";
 import ChainQuizABIJson from "../abis/ChainQuizABI.json";
 
-const CHAIN_QUIZ_ADDRESS =
-  (process.env.NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`) || undefined;
-const RPC_URL = process.env.NEXT_PUBLIC_BASE_RPC_URL as string | undefined;
+const CHAIN_QUIZ_ADDRESS = process.env
+  .NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
+const RPC_URL = process.env.NEXT_PUBLIC_BASE_RPC_URL as string;
+const BACKEND_URL =
+  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000";
 
-// Extract the ABI array
 const ChainQuizABI = Array.isArray(ChainQuizABIJson)
   ? ChainQuizABIJson
   : ChainQuizABIJson.abi || [];
-
-if (!Array.isArray(ChainQuizABI)) {
-  console.error("ChainQuizABI is not a valid ABI array:", ChainQuizABI);
-}
 
 export function useChainQuiz() {
   const { address } = useAccount();
   const { writeContractAsync } = useWriteContract();
 
-  if (!CHAIN_QUIZ_ADDRESS || !CHAIN_QUIZ_ADDRESS.startsWith("0x")) {
-    console.error(
-      "NEXT_PUBLIC_CHAINQUIZ_ADDRESS is not defined or invalid in .env.local"
-    );
+  if (!CHAIN_QUIZ_ADDRESS?.startsWith("0x")) {
+    console.error("Invalid NEXT_PUBLIC_CHAINQUIZ_ADDRESS");
     return null;
   }
   if (!RPC_URL) {
-    console.error("NEXT_PUBLIC_BASE_RPC_URL is not defined in .env.local");
+    console.error("NEXT_PUBLIC_BASE_RPC_URL is not defined");
     return null;
   }
   if (!address) {
-    return null;
-  }
-  if (!ChainQuizABI.length) {
-    console.error("ChainQuizABI is empty or invalid");
+    // no wallet connected
     return null;
   }
 
@@ -45,172 +35,292 @@ export function useChainQuiz() {
     transport: http(RPC_URL),
   });
 
+  const generateQuestions = async (
+    quizId: string,
+    domains: string[],
+    playerAddress: string,
+    difficulty: string
+  ) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/generateQuiz`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quizId, domains, playerAddress, difficulty }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    } catch (err) {
+      console.error("generateQuestions error", err);
+      return null;
+    }
+  };
+
+  const verifyAnswer = async (
+    quizId: string,
+    playerAddress: string,
+    questionIndex: number,
+    answer: number
+  ) => {
+    try {
+      const res = await fetch(`${BACKEND_URL}/verifyAnswer`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ quizId, playerAddress, questionIndex, answer }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return (await res.json()).isCorrect;
+    } catch (err) {
+      console.error("verifyAnswer error", err);
+      return false;
+    }
+  };
+
   return {
     read: {
-      sessions: async (player: string) =>
+      sessions: (player: string) =>
         publicClient.readContract({
           address: CHAIN_QUIZ_ADDRESS,
           abi: ChainQuizABI,
-          functionName: "sessions",
+          functionName: "getSession",
           args: [player],
         }),
+      getRequestStatus: (requestId: bigint) =>
+        publicClient.readContract({
+          address: CHAIN_QUIZ_ADDRESS,
+          abi: ChainQuizABI,
+          functionName: "getRequestStatus",
+          args: [requestId],
+        }),
     },
+    // useChainQuiz.ts (partial update for `write` section)
     write: {
-      startQuiz: async (domains: string[]) =>
-        writeContractAsync({
-          address: CHAIN_QUIZ_ADDRESS,
-          abi: ChainQuizABI,
-          functionName: "startQuiz",
-          args: [domains],
-        }),
-      submitAnswer: async (selectedIndex: number) =>
-        writeContractAsync({
-          address: CHAIN_QUIZ_ADDRESS,
-          abi: ChainQuizABI,
-          functionName: "submitAnswer",
-          args: [selectedIndex],
-        }),
-      cancelQuiz: async () =>
-        writeContractAsync({
-          address: CHAIN_QUIZ_ADDRESS,
-          abi: ChainQuizABI,
-          functionName: "cancelQuiz",
-          args: [],
-        }),
-      finishQuiz: async () =>
-        writeContractAsync({
-          address: CHAIN_QUIZ_ADDRESS,
-          abi: ChainQuizABI,
-          functionName: "finishQuiz",
-          args: [],
-        }),
-      requestRandomChallenge: async () =>
-        writeContractAsync({
-          address: CHAIN_QUIZ_ADDRESS,
-          abi: ChainQuizABI,
-          functionName: "requestRandomChallenge",
-          args: [],
-        }),
-      checkVRFAndGenerateQuiz: async (vrfRequestId: number) =>
-        writeContractAsync({
-          address: CHAIN_QUIZ_ADDRESS,
-          abi: ChainQuizABI,
-          functionName: "checkVRFAndGenerateQuiz",
-          args: [vrfRequestId],
-        }),
+      startQuiz: async (domains: string[]) => {
+        try {
+          const hash = await writeContractAsync({
+            address: CHAIN_QUIZ_ADDRESS,
+            abi: ChainQuizABI,
+            functionName: "startQuiz",
+            args: [domains],
+            gas: BigInt(500000),
+          });
+          return { status: "success", transactionHash: hash };
+        } catch (err: any) {
+          console.error("startQuiz hook error:", err);
+          return { status: "error", message: err.message };
+        }
+      },
+      checkVRFAndGenerateQuiz: async (requestId: bigint) => {
+        try {
+          const hash = await writeContractAsync({
+            address: CHAIN_QUIZ_ADDRESS,
+            abi: ChainQuizABI,
+            functionName: "checkVRFAndGenerateQuiz",
+            args: [requestId],
+            gas: BigInt(300000),
+          });
+          return { status: "success", transactionHash: hash };
+        } catch (err: any) {
+          console.error("checkVRFAndGenerateQuiz hook error:", err);
+          return { status: "error", message: err.message };
+        }
+      },
+      submitAnswer: async (answer: number) => {
+        try {
+          const hash = await writeContractAsync({
+            address: CHAIN_QUIZ_ADDRESS,
+            abi: ChainQuizABI,
+            functionName: "submitAnswer",
+            args: [answer],
+            gas: BigInt(300000),
+          });
+          return { status: "success", transactionHash: hash };
+        } catch (err: any) {
+          console.error("submitAnswer hook error:", err);
+          return { status: "error", message: err.message };
+        }
+      },
+      recordAnswerResult: async (questionId: number, isCorrect: boolean) => {
+        try {
+          const hash = await writeContractAsync({
+            address: CHAIN_QUIZ_ADDRESS,
+            abi: ChainQuizABI,
+            functionName: "recordAnswerResult",
+            args: [questionId, isCorrect],
+            gas: BigInt(300000),
+          });
+          return { status: "success", transactionHash: hash };
+        } catch (err: any) {
+          console.error("recordAnswerResult hook error:", err);
+          return { status: "error", message: err.message };
+        }
+      },
+      cancelQuiz: async () => {
+        try {
+          const hash = await writeContractAsync({
+            address: CHAIN_QUIZ_ADDRESS,
+            abi: ChainQuizABI,
+            functionName: "cancelQuiz",
+            args: [],
+            gas: BigInt(200000),
+          });
+          return { status: "success", transactionHash: hash };
+        } catch (err: any) {
+          console.error("cancelQuiz hook error:", err);
+          return { status: "error", message: err.message };
+        }
+      },
     },
     watch: {
-      // Each watchContractEvent: add console logs inside onLogs, fix arg names
+      onVRFRequestInitiated: (
+        cb: (requestId: bigint, player: string, log: any) => void
+      ) =>
+        publicClient.watchContractEvent({
+          address: CHAIN_QUIZ_ADDRESS,
+          abi: ChainQuizABI,
+          eventName: "VRFRequestInitiated",
+          onLogs: (logs) =>
+            logs.forEach((log) => {
+              cb(log.args.requestId, log.args.player, log);
+            }),
+        }),
       onQuizGenerated: (
-        callback: (
-          player: string,
-          quizId: string,
-          numQuestions: number,
-          log: any
-        ) => void
+        cb: (player: string, quizId: bigint, log: any) => void
       ) =>
         publicClient.watchContractEvent({
           address: CHAIN_QUIZ_ADDRESS,
           abi: ChainQuizABI,
           eventName: "QuizGenerated",
-          // `onLogs` gives an array of log entries
-          onLogs: (logs) => {
+          onLogs: (logs) =>
             logs.forEach((log) => {
-              console.log("[useChainQuiz] QuizGenerated log received:", log);
-              // Arg names must match ABI: check your ABI event param names
-              // e.g., event QuizGenerated(address indexed player, string quizId, uint8 numQuestions);
-              const player = (log as any).args.player;
-              const quizId = (log as any).args.quizId;
-              // Ensure correct field name: often `numQuestions`, not `numQ`
-              const numQuestions = Number((log as any).args.numQuestions);
-              callback(player, quizId, numQuestions, log);
-            });
-          },
+              const player = log.args.player;
+              const quizId = log.args.quizId;
+              cb(player, quizId, log);
+              if (player.toLowerCase() === address.toLowerCase()) {
+                // once on‐chain quizId is set, fetch questions
+                publicClient
+                  .readContract({
+                    address: CHAIN_QUIZ_ADDRESS,
+                    abi: ChainQuizABI,
+                    functionName: "getSession",
+                    args: [address],
+                  })
+                  .then((session: any) =>
+                    generateQuestions(
+                      session.quizId.toString(),
+                      session.domains,
+                      address,
+                      session.numQuestions /* or store difficulty in front */
+                    )
+                  );
+              }
+            }),
         }),
       onAnswerSubmitted: (
+        cb: (player: string, qId: number, answer: number, log: any) => void
+      ) =>
+        publicClient.watchContractEvent({
+          address: CHAIN_QUIZ_ADDRESS,
+          abi: ChainQuizABI,
+          eventName: "AnswerSubmitted",
+          onLogs: (logs) =>
+            logs.forEach((log) => {
+              const player = log.args.player;
+              const qId = Number(log.args.questionId);
+              const ans = Number(log.args.answer);
+              cb(player, qId, ans, log);
+              if (player.toLowerCase() === address.toLowerCase()) {
+                publicClient
+                  .readContract({
+                    address: CHAIN_QUIZ_ADDRESS,
+                    abi: ChainQuizABI,
+                    functionName: "getSession",
+                    args: [address],
+                  })
+                  .then((session: any) =>
+                    verifyAnswer(
+                      session.quizId.toString(),
+                      address,
+                      qId,
+                      ans
+                    ).then((isCorrect) =>
+                      writeContractAsync({
+                        address: CHAIN_QUIZ_ADDRESS,
+                        abi: ChainQuizABI,
+                        functionName: "recordAnswerResult",
+                        args: [qId, isCorrect],
+                      })
+                    )
+                  );
+              }
+            }),
+        }),
+      onAnswerResult: (
         callback: (
           player: string,
+          questionId: number,
           isCorrect: boolean,
-          questionIndex: number,
           log: any
         ) => void
       ) =>
         publicClient.watchContractEvent({
           address: CHAIN_QUIZ_ADDRESS,
           abi: ChainQuizABI,
-          eventName: "AnswerSubmitted",
-          onLogs: (logs) => {
+          eventName: "AnswerResult",
+          onLogs: (logs) =>
             logs.forEach((log) => {
-              console.log("[useChainQuiz] AnswerSubmitted log:", log);
-              const player = (log as any).args.player;
-              const isCorrect = (log as any).args.isCorrect;
-              const questionIndex = Number((log as any).args.questionIndex);
-              callback(player, isCorrect, questionIndex, log);
-            });
-          },
+              console.log("[useChainQuiz] AnswerResult log:", {
+                log,
+                timestamp: new Date().toISOString(),
+              });
+              callback(
+                log.args.playerId,
+                Number(log.args.questionId),
+                log.args.isCorrect,
+                log
+              );
+            }),
         }),
       onQuizCompleted: (
-        callback: (player: string, correctCount: number, log: any) => void
+        callback: (
+          player: string,
+          correctCount: number,
+          reward: bigint,
+          rewardUSD: bigint,
+          log: any
+        ) => void
       ) =>
         publicClient.watchContractEvent({
           address: CHAIN_QUIZ_ADDRESS,
           abi: ChainQuizABI,
           eventName: "QuizCompleted",
-          onLogs: (logs) => {
+          onLogs: (logs) =>
             logs.forEach((log) => {
-              console.log("[useChainQuiz] QuizCompleted log:", log);
-              const player = (log as any).args.player;
-              const correctCount = Number((log as any).args.correctCount);
-              callback(player, correctCount, log);
-            });
-          },
+              console.log("[useChainQuiz] QuizCompleted log:", {
+                log,
+                timestamp: new Date().toISOString(),
+              });
+              callback(
+                log.args.playerId,
+                Number(log.args.correctCount),
+                log.args.reward,
+                log.args.rewardUSD,
+                log
+              );
+            }),
         }),
-      onBonusAwarded: (
-        callback: (player: string, bonus: bigint, log: any) => void
-      ) =>
-        publicClient.watchContractEvent({
-          address: CHAIN_QUIZ_ADDRESS,
-          abi: ChainQuizABI,
-          eventName: "BonusAwarded",
-          onLogs: (logs) => {
-            logs.forEach((log) => {
-              console.log("[useChainQuiz] BonusAwarded log:", log);
-              const player = (log as any).args.player;
-              const bonus = (log as any).args.bonus;
-              callback(player, bonus, log);
-            });
-          },
-        }),
-      onLeaderboardRefreshed: (
-        callback: (timestamp: bigint, log: any) => void
-      ) =>
-        publicClient.watchContractEvent({
-          address: CHAIN_QUIZ_ADDRESS,
-          abi: ChainQuizABI,
-          eventName: "LeaderboardRefreshed",
-          onLogs: (logs) => {
-            logs.forEach((log) => {
-              console.log("[useChainQuiz] LeaderboardRefreshed log:", log);
-              const timestamp = (log as any).args.timestamp;
-              callback(timestamp, log);
-            });
-          },
-        }),
-      onQuizCancelled: (
-        callback: (player: string, refund: bigint, log: any) => void
-      ) =>
+      onQuizCancelled: (callback: (player: string, log: any) => void) =>
         publicClient.watchContractEvent({
           address: CHAIN_QUIZ_ADDRESS,
           abi: ChainQuizABI,
           eventName: "QuizCancelled",
-          onLogs: (logs) => {
+          onLogs: (logs) =>
             logs.forEach((log) => {
-              console.log("[useChainQuiz] QuizCancelled log:", log);
-              const player = (log as any).args.player;
-              const refund = (log as any).args.refund;
-              callback(player, refund, log);
-            });
-          },
+              console.log("[useChainQuiz] QuizCancelled log:", {
+                log,
+                timestamp: new Date().toISOString(),
+              });
+              callback(log.args.playerId, log);
+            }),
         }),
     },
   };

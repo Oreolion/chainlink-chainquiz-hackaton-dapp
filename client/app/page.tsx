@@ -1,3 +1,4 @@
+// page.tsx
 "use client";
 
 import { Component, useEffect, useState, useRef, useCallback } from "react";
@@ -8,8 +9,16 @@ import axios from "axios";
 import { supabase } from "../src/utils/supabaseClient";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import ChainQuizABI from "../src/abis/ChainQuizABI.json";
-import { formatEther, isAddress } from "viem";
-import type { Address } from "viem";
+import { decodeErrorResult, formatEther, isAddress } from "viem";
+import type { Address, Log } from "viem";
+
+// interface QuizGeneratedLog extends Log {
+//   args: { player: string; quizId: bigint };
+// }
+
+// interface VRFRequestInitiatedLog extends Log {
+//   args: { requestId: bigint; player: string };
+// }
 
 class ErrorBoundary extends Component<
   { children: React.ReactNode },
@@ -60,7 +69,6 @@ export default function Home() {
   const publicClient = usePublicClient();
   const quizContract = useChainQuiz();
   const tokenContract = useQuizToken();
-  const diffMap = { Easy: 0, Medium: 1, Hard: 2 } as const;
 
   // State
   const [isMounted, setIsMounted] = useState(false);
@@ -90,13 +98,12 @@ export default function Home() {
   useEffect(() => {
     async function fetchInitialData() {
       const { data, error } = await supabase.from("Quizzes").select("*");
-
       console.log("Quizzes data:", data);
       console.log("Error (if any):", error);
     }
-
     fetchInitialData();
   }, []);
+
   const timerRef = useRef<NodeJS.Timeout | null>(null);
 
   // Debug Fetch Questions
@@ -228,12 +235,10 @@ export default function Home() {
     async (logs: any[]) => {
       const event = logs[0];
       const player: string = event.args.player;
-      const qId: string = event.args.quizId;
-      const numQ: number = Number(event.args.numQuestions);
+      const qId: string = event.args.quizId.toString();
       console.log("onQuizGenerated: Event received", {
         player,
         quizId: qId,
-        numQuestions: numQ,
         txHash: event.transactionHash,
         blockNumber: Number(event.blockNumber),
         timestamp: new Date().toISOString(),
@@ -298,19 +303,19 @@ export default function Home() {
         setIsLoading(false);
       }
     },
-    [address, quizContract]
+    [address]
   );
 
   const onAnswerSubmitted = useCallback(
     (logs: any[]) => {
       const event = logs[0];
       const player: string = event.args.player;
-      const isCorrect: boolean = event.args.isCorrect;
-      const questionIndex: number = Number(event.args.questionIndex);
+      const questionId: number = Number(event.args.questionId);
+      const answer: number = Number(event.args.answer);
       console.log("onAnswerSubmitted: Event received", {
         player,
-        isCorrect,
-        questionIndex,
+        questionId,
+        answer,
         txHash: event.transactionHash,
         blockNumber: Number(event.blockNumber),
         timestamp: new Date().toISOString(),
@@ -324,12 +329,37 @@ export default function Home() {
         return;
       }
       setEntryState("inQuiz");
+      // Wait for AnswerResult event to determine if the answer was correct
+    },
+    [address]
+  );
+
+  const onAnswerResult = useCallback(
+    (logs: any[]) => {
+      const event = logs[0];
+      const player: string = event.args.player;
+      const questionId: number = Number(event.args.questionId);
+      const isCorrect: boolean = event.args.isCorrect;
+      console.log("onAnswerResult: Event received", {
+        player,
+        questionId,
+        isCorrect,
+        txHash: event.transactionHash,
+        blockNumber: Number(event.blockNumber),
+        timestamp: new Date().toISOString(),
+      });
+      if (player.toLowerCase() !== address?.toLowerCase()) {
+        console.log("onAnswerResult: Skipping, mismatch", {
+          player,
+          address,
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
       if (isCorrect) {
         setCurrentIndex((i) => Math.min(i + 1, questions.length - 1));
-        setTimer(45);
-      } else {
-        setTimer(45);
       }
+      setTimer(45);
     },
     [address, questions.length]
   );
@@ -368,10 +398,8 @@ export default function Home() {
     (logs: any[]) => {
       const event = logs[0];
       const player: string = event.args.player;
-      const refundAmount: number = Number(event.args.refundAmount);
       console.log("onQuizCancelled: Event received", {
         player,
-        refundAmount,
         txHash: event.transactionHash,
         blockNumber: Number(event.blockNumber),
         timestamp: new Date().toISOString(),
@@ -394,12 +422,15 @@ export default function Home() {
     [address]
   );
 
+  const chainQuizAddress = process.env
+    .NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
+
   const onVRFRequestInitiated = useCallback(
-    (logs: any[]) => {
+    async (logs: any[]) => {
       const event = logs[0];
       const requestId: string = event.args.requestId.toString();
       const player: string = event.args.player;
-      console.log("onVRFRequestInitiated: Event received", {
+      console.log("🔔 VRFRequestInitiated: Event received", {
         requestId,
         player,
         txHash: event.transactionHash,
@@ -415,13 +446,142 @@ export default function Home() {
         return;
       }
       setVrfRequestId(requestId);
+
+      // Poll VRF request status until fulfilled
+      console.log("onVRFRequestInitiated: Polling VRF request status", {
+        requestId,
+        timestamp: new Date().toISOString(),
+      });
+      let attempts = 0;
+      const maxAttempts = 20; // 20 * 5s = 100s
+      let fulfilled = false;
+      while (!fulfilled && attempts < maxAttempts) {
+        try {
+          const result = (await quizContract?.read.getRequestStatus(
+            BigInt(requestId)
+          )) as boolean[];
+          const isFulfilled = result[0];
+          fulfilled = isFulfilled;
+          console.log("onVRFRequestInitiated: VRF status check", {
+            requestId,
+            fulfilled,
+            attempt: attempts + 1,
+            timestamp: new Date().toISOString(),
+          });
+          if (!fulfilled) {
+            await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
+            attempts++;
+          }
+        } catch (err: any) {
+          console.error("onVRFRequestInitiated: Error checking VRF status", {
+            requestId,
+            error: err.message,
+            timestamp: new Date().toISOString(),
+          });
+          attempts++;
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+        }
+      }
+      if (!fulfilled) {
+        setErrorMessage("VRF request not fulfilled within timeout.");
+        console.error("onVRFRequestInitiated: VRF not fulfilled", {
+          requestId,
+          timestamp: new Date().toISOString(),
+        });
+        setEntryState("idle");
+        return;
+      }
+
+      // Call checkVRFAndGenerateQuiz
+      try {
+        console.log("onVRFRequestInitiated: Calling checkVRFAndGenerateQuiz", {
+          requestId,
+          timestamp: new Date().toISOString(),
+        });
+        const vrfResult = await quizContract?.write.checkVRFAndGenerateQuiz(
+          BigInt(requestId)
+        );
+        const vrfHash = vrfResult?.transactionHash;
+        console.log("✍️ checkVRFAndGenerateQuiz tx sent:", vrfHash, {
+          timestamp: new Date().toISOString(),
+        });
+        const receipt = await publicClient?.waitForTransactionReceipt({
+          hash: vrfHash,
+        });
+        console.log("✅ checkVRFAndGenerateQuiz confirmed:", {
+          status: receipt?.status,
+          gasUsed: receipt?.gasUsed.toString(),
+          transactionHash: vrfHash,
+          logs: receipt?.logs.length,
+          timestamp: new Date().toISOString(),
+        });
+        if (receipt?.status !== "success") {
+          let revertReason = "Unknown reason";
+          try {
+            const errorData = receipt?.logs.find(
+              (log) => log.topics[0] === "0x08c379a0"
+            );
+            if (errorData) {
+              const decoded = decodeErrorResult({
+                abi: [
+                  {
+                    name: "Error",
+                    type: "error",
+                    inputs: [{ type: "string" }],
+                  },
+                ],
+                data: errorData.data,
+              });
+              revertReason = decoded.args[0];
+            }
+          } catch (decodeErr) {
+            console.error("Failed to decode revert reason:", decodeErr);
+          }
+          throw new Error(
+            `checkVRFAndGenerateQuiz transaction reverted: ${revertReason}`
+          );
+        }
+      } catch (err: any) {
+        console.error(
+          "onVRFRequestInitiated: checkVRFAndGenerateQuiz error:",
+          err
+        );
+        setErrorMessage(`Failed to finalize VRF: ${err.message}`);
+        setEntryState("idle");
+      }
     },
-    [address]
+    [address, quizContract, publicClient]
   );
 
+ useWatchContractEvent({
+  address: chainQuizAddress,
+  abi: ChainQuizABI,
+  eventName: "VRFRequestInitiated",
+  onLogs: (logs) =>
+    logs.forEach(async (log) => {
+      const player    = log.args.player;
+      const requestId = log.args.requestId; // bigint
+
+      if (player.toLowerCase() !== address?.toLowerCase()) return;
+
+      console.log("🔔 VRFRequestInitiated:", requestId.toString());
+
+      // immediately finalize the VRF on-chain
+      const { status, transactionHash } =
+        await quizContract?.write.checkVRFAndGenerateQuiz(requestId);
+      if (status === "success") {
+        console.log("✍️ checkVRFAndGenerateQuiz tx sent", transactionHash);
+        await publicClient?.waitForTransactionReceipt({ hash: transactionHash });
+        console.log("✅ checkVRFAndGenerateQuiz confirmed");
+      } else {
+        console.error("❌ checkVRFAndGenerateQuiz failed");
+      }
+    }),
+  enabled: !!quizContract && status === "connected",
+});
+
+
   // Event Subscriptions
-  const chainQuizAddress = process.env
-    .NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
 
   useWatchContractEvent({
     address: chainQuizAddress,
@@ -436,6 +596,14 @@ export default function Home() {
     abi: ChainQuizABI,
     eventName: "AnswerSubmitted",
     onLogs: onAnswerSubmitted,
+    enabled: !!quizContract && !!address && status === "connected",
+  });
+
+  useWatchContractEvent({
+    address: chainQuizAddress,
+    abi: ChainQuizABI,
+    eventName: "AnswerResult",
+    onLogs: onAnswerResult,
     enabled: !!quizContract && !!address && status === "connected",
   });
 
@@ -464,8 +632,8 @@ export default function Home() {
   });
 
   // Start Quiz
+  // page.tsx (replace startQuiz function)
   const startQuiz = useCallback(async () => {
-    // 1️⃣ Basic validation
     if (
       !quizContract ||
       !tokenContract ||
@@ -474,9 +642,14 @@ export default function Home() {
       !address
     ) {
       setErrorMessage(
-        "Select at least 5 domains, choose a difficulty & connect your wallet."
+        "Select at least 5 domains, connect your wallet, or check contract configuration."
       );
       console.log("startQuiz: Invalid input", {
+        quizContract: !!quizContract,
+        tokenContract: !!tokenContract,
+        publicClient: !!publicClient,
+        selectedDomains,
+        address,
         timestamp: new Date().toISOString(),
       });
       return;
@@ -486,26 +659,22 @@ export default function Home() {
     setIsLoading(true);
 
     try {
-      // 2️⃣ Prepare params
       const quizAddr =
         process.env.NEXT_PUBLIC_CHAINQUIZ_ADDRESS ??
         "0xB7E0a11c36C147F89f161DE392727C4A7a99761F";
       const entryFee = BigInt(
         process.env.NEXT_PUBLIC_ENTRY_FEE_IN_QUIZ ?? "10000000000000000"
-      );
-      const diffMap = { Easy: 0, Medium: 1, Hard: 2 } as const;
-      const diffIndex = diffMap[difficulty];
+      ); // 0.01 ether
 
       console.log("🚀 startQuiz → Config", {
         quizAddr,
         entryFee: entryFee.toString(),
         selectedDomains,
-        diffIndex,
         address,
         timestamp: new Date().toISOString(),
       });
 
-      // 3️⃣ Check $QUIZ balance
+      // Check $QUIZ balance
       const balance = await tokenContract.read.balanceOf(address);
       console.log("startQuiz: Balance", {
         balance: balance.toString(),
@@ -517,7 +686,7 @@ export default function Home() {
         );
       }
 
-      // 4️⃣ Check allowance
+      // Check allowance
       const allowance = await tokenContract.read.allowance(address, quizAddr);
       console.log("startQuiz: Allowance", {
         allowance: allowance.toString(),
@@ -548,7 +717,6 @@ export default function Home() {
         if (receipt1.status !== "success") {
           throw new Error("Approval transaction failed.");
         }
-        // Verify allowance after approval
         const newAllowance = await tokenContract.read.allowance(
           address,
           quizAddr
@@ -562,36 +730,36 @@ export default function Home() {
         }
       }
 
-      // 5️⃣ Call startQuiz
+      // Call startQuiz
       console.log("🚀 startQuiz → Submitting on-chain", {
         selectedDomains,
-        diffIndex,
         timestamp: new Date().toISOString(),
       });
-      const startHash = await quizContract.write.startQuiz(selectedDomains); // Adjust if difficulty is needed
+      const startResult = await quizContract.write.startQuiz(selectedDomains);
+      const startHash = startResult.transactionHash;
       console.log("✍️ startQuiz tx sent:", startHash, {
         timestamp: new Date().toISOString(),
       });
-      const receipt2 = await publicClient.waitForTransactionReceipt({
+      const receipt = await publicClient.waitForTransactionReceipt({
         hash: startHash,
       });
       console.log("✅ startQuiz confirmed:", {
-        status: receipt2.status,
-        gasUsed: receipt2.gasUsed.toString(),
+        status: receipt.status,
+        gasUsed: receipt.gasUsed.toString(),
         transactionHash: startHash,
+        logs: receipt.logs.length,
         timestamp: new Date().toISOString(),
       });
-      if (receipt2.status !== "success") {
-        // Decode revert reason
+      if (receipt.status !== "success") {
         let revertReason = "Unknown reason";
         try {
-          const errorData = receipt2.logs.find(
+          const errorData = receipt.logs.find(
             (log) => log.topics[0] === "0x08c379a0"
-          ); // Error(string)
+          );
           if (errorData) {
-            const decoded = publicClient.abiDecoder.decodeErrorResult({
+            const decoded = decodeErrorResult({
               abi: [
-                { type: "error", name: "Error", inputs: [{ type: "string" }] },
+                { name: "Error", type: "error", inputs: [{ type: "string" }] },
               ],
               data: errorData.data,
             });
@@ -602,9 +770,7 @@ export default function Home() {
         }
         throw new Error(`startQuiz transaction reverted: ${revertReason}`);
       }
-
-      // All further UX updates will come via on-chain event subscribers
-    } catch (err: Error) {
+    } catch (err: any) {
       console.error("❌ startQuiz error:", err);
       let errorMsg = `Failed to start quiz: ${err.message}`;
       if (err.message.includes("reverted")) {
@@ -626,15 +792,7 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
-  }, [
-    quizContract,
-    tokenContract,
-    publicClient,
-    selectedDomains,
-    difficulty,
-    address,
-  ]);
-
+  }, [quizContract, tokenContract, publicClient, selectedDomains, address]);
   // Submit Answer
   const submitAnswer = useCallback(
     async (selectedIndex: number) => {
@@ -685,7 +843,7 @@ export default function Home() {
           txHash: submitHash,
           timestamp: new Date().toISOString(),
         });
-        const receipt = await publicClient?.waitForTransactionReceipt({
+        const receipt = await publicClient.waitForTransactionReceipt({
           hash: submitHash,
         });
         console.log("submitAnswer: Transaction confirmed", {
@@ -694,14 +852,6 @@ export default function Home() {
           gasUsed: receipt?.gasUsed.toString(),
           timestamp: new Date().toISOString(),
         });
-        if (currentIndex < questions.length - 1) {
-          console.log("submitAnswer: Advancing to next question", {
-            currentIndex,
-            nextIndex: currentIndex + 1,
-            totalQuestions: questions.length,
-            timestamp: new Date().toISOString(),
-          });
-        }
       } catch (err: any) {
         console.error("submitAnswer: Error", {
           message: err.message,
@@ -712,7 +862,7 @@ export default function Home() {
           `Failed to submit answer: ${err.response?.data?.error || err.message}`
         );
         setEntryState("inQuiz");
-        setTimer(60);
+        setTimer(45);
       } finally {
         setIsLoading(false);
       }
@@ -879,7 +1029,6 @@ export default function Home() {
         </header>
 
         <main className="flex-1 p-6 space-y-6">
-          {/* Error Message */}
           {errorMessage && (
             <div className="p-4 bg-red-500/20 border border-red-500 rounded-lg">
               <p className="text-red-400">{errorMessage}</p>
@@ -892,7 +1041,6 @@ export default function Home() {
             </div>
           )}
 
-          {/* Wallet & Balance */}
           {status === "connected" && address && (
             <div className="flex justify-end gap-4">
               <p className="text-sm text-gray-400 truncate max-w-[12rem]">
@@ -902,7 +1050,6 @@ export default function Home() {
             </div>
           )}
 
-          {/* Domain Selection, Difficulty, & Start Quiz */}
           {status === "connected" && address && entryState === "idle" && (
             <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
               <h2 className="text-xl font-semibold text-gray-100">
@@ -963,14 +1110,13 @@ export default function Home() {
                 )}
                 <span className={isLoading ? "opacity-0" : ""}>
                   {entryState === "staking"
-                    ? "Staking 10 QUIZ..."
+                    ? "Staking 0.01 QUIZ..."
                     : `Start Quiz (${selectedDomains.length} Domains, ${difficulty})`}
                 </span>
               </button>
             </div>
           )}
 
-          {/* Quiz Questions */}
           {status === "connected" &&
             address &&
             entryState === "inQuiz" &&
@@ -1019,7 +1165,6 @@ export default function Home() {
               </div>
             )}
 
-          {/* Quiz Completion */}
           {status === "connected" &&
             address &&
             entryState === "awaitingAnswer" && (
@@ -1047,7 +1192,6 @@ export default function Home() {
               </div>
             )}
 
-          {/* Debug Tools */}
           <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
             <h2 className="text-xl font-semibold text-gray-100">Debug Tools</h2>
             <button
@@ -1060,7 +1204,6 @@ export default function Home() {
             </button>
           </div>
 
-          {/* Leaderboard */}
           <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
             <h2 className="text-xl font-semibold text-gray-100">
               Leaderboard (Top 5)

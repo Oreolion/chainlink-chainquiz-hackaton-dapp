@@ -278,6 +278,7 @@ Return valid JSON:
         console.error("Invalid question count:", questions.length);
         return res.status(500).json({ error: "Expected exactly 10 questions" });
       }
+      console.log("💥 questions from OpenAI:", questions);
 
       console.log("Inserting quiz into Supabase");
       const { data, error } = await supabase
@@ -295,6 +296,8 @@ Return valid JSON:
           },
         ])
         .select("quiz_id, num_questions");
+          console.log("💥 Supabase insert result:", data, error);
+
 
       if (error) {
         console.error("Supabase insert error:", error);
