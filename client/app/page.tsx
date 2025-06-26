@@ -1,114 +1,214 @@
-// page.tsx
 "use client";
 
-import { Component, useEffect, useState, useRef, useCallback } from "react";
-import { useAccount, usePublicClient, useWatchContractEvent } from "wagmi";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import {
+  useAccount,
+  usePublicClient,
+  useWatchContractEvent,
+  useAccountEffect, // Added for connection handling
+} from "wagmi";
 import { useQuizToken } from "../src/hooks/useQuizToken";
 import { useChainQuiz } from "../src/hooks/useChainQuiz";
-import axios from "axios";
 import { supabase } from "../src/utils/supabaseClient";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
-import ChainQuizABI from "../src/abis/ChainQuizABI.json";
-import { decodeErrorResult, formatEther, isAddress } from "viem";
-import type { Address, Log } from "viem";
+import { formatEther, isAddress } from "viem";
+import chainQuizABI from "../src/abis/ChainQuizABI.json";
 
-// interface QuizGeneratedLog extends Log {
-//   args: { player: string; quizId: bigint };
-// }
+// Environment variables
+const CHAIN_QUIZ_ADDRESS = process.env
+  .NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
+const QUIZ_TOKEN_ADDRESS = process.env
+  .NEXT_PUBLIC_QUIZTOKEN_ADDRESS as `0x${string}`;
 
-// interface VRFRequestInitiatedLog extends Log {
-//   args: { requestId: bigint; player: string };
-// }
+// ChainQuiz contract ABI for events
 
-class ErrorBoundary extends Component<
-  { children: React.ReactNode },
-  { hasError: boolean; error: Error | null }
-> {
-  state = { hasError: false, error: null };
+function ErrorBoundary({ children }: { children: React.ReactNode }) {
+  const [hasError, setHasError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
-  static getDerivedStateFromError(error: Error) {
-    return { hasError: true, error };
+  useEffect(() => {
+    const handleError = (event: ErrorEvent) => {
+      console.error("ErrorBoundary caught:", event);
+      setHasError(true);
+      setError(event.error?.message || "An unknown error occurred");
+    };
+    window.addEventListener("error", handleError);
+    return () => window.removeEventListener("error", handleError);
+  }, []);
+
+  if (hasError) {
+    return (
+      <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
+        <header className="flex justify-between items-center p-6 bg-gray-800/70 backdrop-blur-sm">
+          <h1 className="text-3xl font-bold text-blue-400">ChainQuiz</h1>
+          <ConnectButton showBalance={false} />
+        </header>
+        <main className="flex-1 p-6 space-y-6">
+          <div className="p-4 bg-red-500/20 border border-red-500 rounded-lg text-center">
+            <p className="text-red-400">
+              {error || "An unknown error occurred"}
+            </p>
+            <button
+              onClick={() => {
+                setHasError(false);
+                setError(null);
+              }}
+              className="mt-4 px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded-lg text-white"
+            >
+              Retry
+            </button>
+          </div>
+        </main>
+      </div>
+    );
   }
-
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    console.error("ErrorBoundary caught an error:", error, errorInfo);
-  }
-
-  render() {
-    if (this.state.hasError) {
-      return (
-        <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
-          <header className="flex justify-between items-center p-6 bg-gray-800/70 backdrop-blur-sm">
-            <h1 className="text-3xl font-bold text-blue-400">ChainQuiz</h1>
-            <ConnectButton showBalance={false} />
-          </header>
-          <main className="flex-1 p-6">
-            <div className="text-center text-red-400">
-              <p>
-                Something went wrong:{" "}
-                {this.state.error?.message || "Unknown error"}
-              </p>
-              <button
-                onClick={() => this.setState({ hasError: false, error: null })}
-                className="mt-4 px-4 py-2 bg-blue-500 hover:bg-blue-600 rounded-lg text-white"
-              >
-                Retry
-              </button>
-            </div>
-          </main>
-        </div>
-      );
-    }
-    return this.props.children;
-  }
+  return <>{children}</>;
 }
 
 export default function Home() {
-  // Hooks
+  // Hooks and state
   const { address, status } = useAccount();
   const publicClient = usePublicClient();
-  const quizContract = useChainQuiz();
-  const tokenContract = useQuizToken();
-
-  // State
-  const [isMounted, setIsMounted] = useState(false);
+  const chainQuizRaw = useChainQuiz();
+  const tokenContractRaw = useQuizToken();
+  const chainQuiz = useMemo(() => chainQuizRaw, [chainQuizRaw]);
+  const tokenContract = useMemo(() => tokenContractRaw, [tokenContractRaw]);
+  const isHooksInitialized = Boolean(chainQuiz && tokenContract);
+  const [isLoading, setIsLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<string>("");
-  const [isLoading, setIsLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string>("");
   const [domains, setDomains] = useState<string[]>([]);
   const [selectedDomains, setSelectedDomains] = useState<string[]>([]);
   const [difficulty, setDifficulty] = useState<"Easy" | "Medium" | "Hard">(
     "Medium"
   );
-  const [quizId, setQuizId] = useState<string>("");
-  const [vrfRequestId, setVrfRequestId] = useState<string>("");
   const [questions, setQuestions] = useState<any[]>([]);
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [timer, setTimer] = useState<number>(45);
   const [entryState, setEntryState] = useState<
     "idle" | "staking" | "inQuiz" | "awaitingAnswer"
   >("idle");
-  const [reward, setReward] = useState<string>("");
-  const [rewardUSD, setRewardUSD] = useState<string>("");
   const [balance, setBalance] = useState<string>("0");
   const [leaderboard, setLeaderboard] = useState<
     { address: string; score: number }[]
   >([]);
-
-  useEffect(() => {
-    async function fetchInitialData() {
-      const { data, error } = await supabase.from("Quizzes").select("*");
-      console.log("Quizzes data:", data);
-      console.log("Error (if any):", error);
-    }
-    fetchInitialData();
-  }, []);
+  const [quizId, setQuizId] = useState<string>("");
+  const [reward, setReward] = useState<string>("");
+  const [rewardUSD, setRewardUSD] = useState<string>("");
+  const hasFetched = useRef(false);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
+  const ENTRY_FEE = BigInt(
+    process.env.NEXT_PUBLIC_ENTRY_FEE ?? "10000000000000000"
+  );
+
+  // Debug wallet connection state
+  useEffect(() => {
+    console.log("Wallet state:", {
+      address,
+      status,
+      timestamp: new Date().toISOString(),
+    });
+  }, [address, status]);
+
+  // Reset hasFetched on wallet connect
+  useAccountEffect({
+    onConnect: () => {
+      console.log("Wallet connected, resetting hasFetched", {
+        timestamp: new Date().toISOString(),
+      });
+      hasFetched.current = false;
+    },
+    onDisconnect: () => {
+      console.log("Wallet disconnected, resetting balance", {
+        timestamp: new Date().toISOString(),
+      });
+      setBalance("0");
+      hasFetched.current = false;
+    },
+  });
+
+  // Validate environment variables
+  const isValidConfig =
+    isAddress(CHAIN_QUIZ_ADDRESS) && isAddress(QUIZ_TOKEN_ADDRESS);
+  if (!isValidConfig) {
+    return (
+      <ErrorBoundary>
+        <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
+          <header className="flex justify-between items-center p-6 bg-gray-800/70 backdrop-blur-sm">
+            <h1 className="text-2xl font-bold text-blue-600">ChainQuiz</h1>
+            <ConnectButton showBalance={false} />
+          </header>
+          <main className="flex-1 p-6 space-y-6">
+            <div className="p-4 bg-red-500/20 border border-red-600 rounded-lg text-center">
+              <p className="text-red-500">
+                Error: Invalid contract addresses. Check
+                NEXT_PUBLIC_CHAINQUIZ_ADDRESS and NEXT_PUBLIC_QUIZ_TOKEN_ADDRESS
+                in .env.local
+              </p>
+            </div>
+          </main>
+        </div>
+      </ErrorBoundary>
+    );
+  }
+
+  // Debounce utility
+  const debounce = (func: (...args: any[]) => void, wait: number) => {
+    let timeout: NodeJS.Timeout;
+    return (...args: any[]) => {
+      clearTimeout(timeout);
+      timeout = setTimeout(() => func(...args), wait);
+    };
+  };
+
+  // Fetch Balance
+  const fetchBalance = useCallback(
+    debounce(async () => {
+      if (!tokenContract || status !== "connected" || !isAddress(address!)) {
+        setBalance("0");
+        console.log("fetchBalance: Skipped", {
+          tokenContract: !!tokenContract,
+          status,
+          address,
+          isValidAddress: isAddress(address!),
+          timestamp: new Date().toISOString(),
+        });
+        return;
+      }
+      try {
+        const raw = await tokenContract.read.balanceOf(address!);
+        const bal =
+          typeof raw === "bigint"
+            ? raw
+            : typeof raw === "number"
+            ? BigInt(raw)
+            : 0n;
+        setBalance(formatEther(bal));
+        console.log("fetchBalance: Success", {
+          balance: formatEther(bal),
+          ts: new Date().toISOString(),
+        });
+      } catch (e: any) {
+        console.error("fetchBalance error:", e);
+        setBalance("Error");
+      }
+    }, 500),
+    [tokenContract, address, status]
+  );
+
+  // Fetch Balance Effect
+  useEffect(() => {
+    if (hasFetched.current) return;
+    if (tokenContract && status === "connected" && isAddress(address!)) {
+      hasFetched.current = true;
+      fetchBalance();
+    }
+  }, [tokenContract, address, status, fetchBalance]);
 
   // Debug Fetch Questions
   const debugFetchQuestions = useCallback(async (quizId: string) => {
-    console.log("debugFetchQuestions: Querying Supabase", {
+    console.log("debugFetchQuestions:", {
       quizId,
       timestamp: new Date().toISOString(),
     });
@@ -116,82 +216,142 @@ export default function Home() {
       const { data, error } = await supabase
         .from("Quizzes")
         .select("questions")
-        .eq("quiz_id", quizId)
+        .eq("id", quizId)
         .single();
-      if (error) {
-        console.error("debugFetchQuestions: Supabase error", {
-          message: error.message,
-          details: error.details,
-          timestamp: new Date().toISOString(),
-        });
-        throw error;
-      }
-      console.log("debugFetchQuestions: Fetched data", {
-        data,
+      if (error) throw error;
+      console.log("debugFetch success:", {
         questionCount: data.questions?.length,
-        timestamp: new Date().toISOString(),
       });
-      if (!data.questions || !Array.isArray(data.questions)) {
-        console.error("debugFetchQuestions: Invalid questions format", {
-          questions: data.questions,
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-      console.log("debugFetchQuestions: Questions", {
-        questionCount: data.questions.length,
-        questions: data.questions,
-        timestamp: new Date().toISOString(),
-      });
+      if (!data.questions || !Array.isArray(data.questions))
+        throw new Error("Invalid questions format");
+      setQuestions(data.questions);
+      setEntryState("inQuiz");
+      setTimer(45);
     } catch (err: any) {
-      console.error("debugFetchQuestions: Error", {
-        message: err.message,
-        timestamp: new Date().toISOString(),
-      });
+      console.error("debugFetchQuestions error:", err.message);
+      setErrorMessage(`Failed to fetch questions: ${err.message}`);
     }
   }, []);
 
-  // Fetch Balance
-  const fetchBalance = useCallback(async () => {
-    console.log("fetchBalance: Starting", {
-      address,
-      status,
-      tokenContract: !!tokenContract,
-      isValidAddress: isAddress(address ?? ""),
-      timestamp: new Date().toISOString(),
-    });
-    if (
-      !tokenContract ||
-      !address ||
-      status !== "connected" ||
-      !isAddress(address)
-    ) {
-      console.log("fetchBalance: Skipping invalid input", {
-        timestamp: new Date().toISOString(),
-      });
-      setBalance("0");
+  // Debug Generate Questions
+  const debugGenerateQuestions = useCallback(async () => {
+    if (!address) {
+      setErrorMessage("Connect wallet to generate questions");
       return;
     }
+    setIsLoading(true);
     try {
-      const raw = await tokenContract.read.balanceOf(address as Address);
-      const bal: bigint = typeof raw === "bigint" ? raw : BigInt(raw as string);
-      console.log("fetchBalance: Success", {
-        balance: formatEther(bal),
-        timestamp: new Date().toISOString(),
-      });
-      setBalance(formatEther(bal));
-    } catch (err: any) {
-      console.error("fetchBalance: Error", {
-        message: err.message,
-        timestamp: new Date().toISOString(),
-      });
-      setBalance("0");
-    }
-  }, [tokenContract, address, status]);
+      const mockQuizId = `quiz-${Date.now()}`;
+      const mockRequestId = `0x${Buffer.from(mockQuizId).toString(
+        "hex"
+      )}` as `0x${string}`;
+      const mockQuestions = Array.from({ length: 10 }, (_, i) => ({
+        id: `q${i + 1}`,
+        domain: selectedDomains[i % selectedDomains.length],
+        text: `Question ${i + 1} on ${
+          selectedDomains[i % selectedDomains.length]
+        } (${difficulty})`,
+        options: ["Option 1 (Correct)", "Option 2", "Option 3", "Option 4"],
+        correctIndex: 0,
+      }));
 
-  useEffect(() => {
-    fetchBalance();
-  }, [fetchBalance]);
+      const { error } = await supabase.from("Quizzes").insert({
+        id: mockQuizId,
+        player_address: address.toLowerCase(),
+        domains: selectedDomains,
+        difficulty: difficulty.toLowerCase(),
+        questions: mockQuestions,
+        started_at: new Date().toISOString(),
+        correct_count: 0,
+        completed_at: null,
+      });
+
+      if (error) throw new Error(`Supabase insert failed: ${error.message}`);
+
+      setQuizId(mockQuizId);
+      await chainQuiz.debugFulfillRequest(
+        mockRequestId,
+        `0x${Buffer.from(`${mockQuizId}|10`).toString("hex")}`,
+        "0x"
+      );
+
+      setQuestions(mockQuestions);
+      setEntryState("inQuiz");
+      setTimer(45);
+    } catch (err: any) {
+      console.error("debugGenerateQuestions:", {
+        message: err.message,
+        details: err,
+      });
+      setErrorMessage(`Failed to generate questions: ${err.message}`);
+    } finally {
+      setIsLoading(false);
+    }
+  }, [
+    chainQuiz,
+    address,
+    selectedDomains,
+    difficulty,
+    setQuizId,
+    setQuestions,
+    setEntryState,
+    setTimer,
+  ]);
+
+  // Debug Submit Answer
+  const debugSubmitAnswer = useCallback(
+    async (selectedIndex: number, isCorrect: boolean) => {
+      if (!chainQuiz?.quizId || !address || !chainQuiz?.lastRequestId) {
+        setErrorMessage("Quiz ID, address, or request ID not available");
+        return;
+      }
+      setIsLoading(true);
+      try {
+        const responseBytes = isCorrect ? "0x31" : "0x30";
+        await chainQuiz.debugFulfillRequest(
+          chainQuiz.lastRequestId,
+          responseBytes,
+          "0x"
+        );
+        const { data, error } = await supabase
+          .from("Quizzes")
+          .select("correct_count")
+          .eq("id", chainQuiz.quizId)
+          .single();
+        if (error) throw new Error(`Supabase fetch failed: ${error.message}`);
+        const newCorrectCount = isCorrect
+          ? data.correct_count + 1
+          : data.correct_count;
+        const { error: updateError } = await supabase
+          .from("Quizzes")
+          .update({
+            correct_count: newCorrectCount,
+            completed_at:
+              currentIndex === questions.length - 1
+                ? new Date().toISOString()
+                : null,
+          })
+          .eq("id", chainQuiz.quizId);
+        if (updateError)
+          throw new Error(`Supabase update failed: ${updateError.message}`);
+        console.log("debugSubmitAnswer:", {
+          quizId: chainQuiz.quizId,
+          selectedIndex,
+          isCorrect,
+        });
+        if (isCorrect) {
+          setCurrentIndex((i) => Math.min(i + 1, questions.length - 1));
+        }
+        setTimer(45);
+      } catch (err: any) {
+        console.error("debugSubmitAnswer:", err.message);
+        setErrorMessage(`Failed to submit debug answer: ${err.message}`);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [chainQuiz, address, currentIndex, questions.length]
+  );
 
   // Fetch Leaderboard
   const fetchLeaderboard = useCallback(async () => {
@@ -230,132 +390,271 @@ export default function Home() {
     }
   }, []);
 
+  // Start Quiz
+  const startQuiz = useCallback(async () => {
+    if (
+      !address ||
+      !publicClient ||
+      !tokenContract ||
+      !chainQuiz ||
+      selectedDomains.length < 5
+    ) {
+      setErrorMessage("Please connect wallet and select at least 5 domains");
+      return;
+    }
+    setEntryState("staking");
+    setIsLoading(true);
+    try {
+      const balance = await tokenContract.read.balanceOf(address);
+      console.log("startQuiz balance:", {
+        balance: formatEther(balance),
+        address,
+      });
+      if (balance < ENTRY_FEE) {
+        throw new Error("Insufficient $QUIZ balance.");
+      }
+
+      const allowance = await tokenContract.read.allowance(
+        address,
+        CHAIN_QUIZ_ADDRESS
+      );
+      console.log("startQuiz allowance:", {
+        allowance: formatEther(allowance),
+        address,
+      });
+      if (allowance < ENTRY_FEE) {
+        console.log("startQuiz approving:", {
+          chainQuizAddress: CHAIN_QUIZ_ADDRESS,
+          entryFee: ENTRY_FEE.toString(),
+          address,
+        });
+        const hash = await tokenContract.write.approve([
+          CHAIN_QUIZ_ADDRESS,
+          ENTRY_FEE,
+        ]);
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash,
+          timeout: 30000,
+        });
+        if (receipt.status !== "success") throw new Error("Approval failed.");
+        fetchBalance();
+      }
+
+      console.log("startQuiz submitting:", {
+        selectedDomains,
+        difficulty,
+        address,
+      });
+      const startHash = await chainQuiz.startQuiz(selectedDomains, difficulty);
+      console.log("startQuiz: Transaction sent", { hash: startHash });
+
+      // Wait for transaction receipt
+      const receipt = await publicClient.waitForTransactionReceipt({
+        hash: startHash,
+        timeout: 60000, // 60 seconds
+      });
+      console.log("startQuiz: Receipt", {
+        hash: startHash,
+        status: receipt.status,
+      });
+      if (receipt.status !== "success") {
+        throw new Error(
+          "Transaction reverted. Check contract logs for details."
+        );
+      }
+
+      // In local testing, skip waiting for QuizGenerated and use debugGenerateQuestions
+      await debugGenerateQuestions();
+    } catch (err: any) {
+      console.error("startQuiz error:", {
+        message: err.message,
+        details: err,
+        address,
+        selectedDomains,
+        difficulty,
+        timestamp: new Date().toISOString(),
+      });
+      setErrorMessage(`Failed to start quiz: ${err.message}`);
+      setEntryState("idle");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [
+    address,
+    publicClient,
+    tokenContract,
+    chainQuiz,
+    selectedDomains,
+    difficulty,
+    fetchBalance,
+    debugGenerateQuestions,
+  ]);
+
+  useEffect(() => {
+    if (entryState !== "staking") return;
+    const timeout = setTimeout(() => {
+      if (entryState === "staking") {
+        console.log("startQuiz: Timeout waiting for QuizGenerated", {
+          timestamp: new Date().toISOString(),
+        });
+        setErrorMessage("Quiz generation timed out. Please try again.");
+        setEntryState("idle");
+        setIsLoading(false);
+      }
+    }, 30_000); // 30 seconds
+    return () => clearTimeout(timeout);
+  }, [entryState]);
+
+  // Submit Answer
+  const submitAnswer = useCallback(
+    async (selectedIndex: number) => {
+      console.log("submitAnswer:", {
+        quizId: chainQuiz.quizId,
+        questionId: questions[currentIndex]?.id,
+        selectedIndex,
+      });
+      if (
+        !isHooksInitialized ||
+        !address ||
+        status !== "connected" ||
+        !chainQuiz.quizId
+      ) {
+        setErrorMessage("Invalid input: Connect wallet or quiz not active");
+        return;
+      }
+      setIsLoading(true);
+      try {
+        await chainQuiz.submitAnswer(selectedIndex);
+        console.log("submitAnswer success:", { selectedIndex });
+      } catch (err: any) {
+        console.error("submitAnswer error:", err.message);
+        setErrorMessage(`Failed to submit answer: ${err.message}`);
+        setEntryState("inQuiz");
+        setTimer(45);
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [isHooksInitialized, address, status, chainQuiz, questions, currentIndex]
+  );
+
+  // Cancel Quiz
+  const cancelQuiz = useCallback(async () => {
+    console.log("cancelQuiz:", { quizId: chainQuiz.quizId });
+    if (!isHooksInitialized || !address || status !== "connected") {
+      setErrorMessage("Invalid input: Connect wallet");
+      return;
+    }
+    setIsLoading(true);
+    try {
+      await chainQuiz.cancelQuiz();
+      console.log("cancelQuiz success:");
+      fetchBalance();
+    } catch (err: any) {
+      console.error("cancelQuiz error:", err.message);
+      setErrorMessage(`Failed to cancel quiz: ${err.message}`);
+      setEntryState("idle");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [isHooksInitialized, address, status, chainQuiz, fetchBalance]);
+
   // Event Handlers
+  const onQuizRequested = useCallback(
+    (logs: any[]) => {
+      const event = logs[0];
+      const player: string = event.args.player;
+      const requestId: `0x${string}` = event.args.requestId;
+      console.log("onQuizRequested:", {
+        player,
+        requestId,
+        txHash: event.transactionHash,
+      });
+      if (player.toLowerCase() !== address?.toLowerCase()) return;
+      chainQuiz.setLastRequestId(requestId);
+    },
+    [address, chainQuiz]
+  );
+
   const onQuizGenerated = useCallback(
     async (logs: any[]) => {
       const event = logs[0];
       const player: string = event.args.player;
-      const qId: string = event.args.quizId.toString();
-      console.log("onQuizGenerated: Event received", {
+      const qId: string = event.args.quizId;
+      console.log("onQuizGenerated:", {
         player,
         quizId: qId,
         txHash: event.transactionHash,
-        blockNumber: Number(event.blockNumber),
-        timestamp: new Date().toISOString(),
       });
-      if (player.toLowerCase() !== address?.toLowerCase()) {
-        console.log("onQuizGenerated: Skipping, player mismatch", {
-          player,
-          address,
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-      setQuizId(qId);
+      if (player.toLowerCase() !== address?.toLowerCase()) return;
       setIsLoading(true);
+      setQuizId(qId);
       try {
-        console.log("onQuizGenerated: Fetching questions from Supabase", {
-          quizId: qId,
-          timestamp: new Date().toISOString(),
-        });
-        const { data, error } = await supabase
-          .from("Quizzes")
-          .select("questions")
-          .eq("quiz_id", qId)
-          .single();
-        console.log("📝 Supabase questions for", qId, data?.questions);
-        if (error) {
-          console.error("onQuizGenerated: Supabase error", {
-            message: error.message,
-            details: error.details,
-            timestamp: new Date().toISOString(),
-          });
-          throw error;
-        }
-        if (!data.questions || !Array.isArray(data.questions)) {
-          console.error("onQuizGenerated: Invalid questions format", {
-            questions: data.questions,
-            timestamp: new Date().toISOString(),
-          });
-          throw new Error("Invalid questions format from Supabase");
-        }
-        console.log("onQuizGenerated: Questions fetched", {
-          quizId: qId,
-          questionCount: data.questions.length,
-          questions: data.questions,
-          timestamp: new Date().toISOString(),
-        });
-        setQuestions(data.questions);
-        setEntryState("inQuiz");
-        setTimer(45);
+        await debugFetchQuestions(qId);
         setErrorMessage("");
       } catch (err: any) {
-        console.error("onQuizGenerated: Error", {
-          message: err.message,
-          error: err.response?.data || err,
-          timestamp: new Date().toISOString(),
-        });
-        setErrorMessage(
-          `Failed to fetch quiz: ${err.response?.data?.error || err.message}`
-        );
+        console.error("onQuizGenerated error:", err.message);
+        setErrorMessage(`Failed to fetch quiz details: ${err.message}`);
         setEntryState("idle");
       } finally {
         setIsLoading(false);
       }
     },
-    [address]
+    [address, debugFetchQuestions]
   );
 
-  const onAnswerSubmitted = useCallback(
-    (logs: any[]) => {
+  const onAnswerChecked = useCallback(
+    async (logs: any[]) => {
       const event = logs[0];
       const player: string = event.args.player;
-      const questionId: number = Number(event.args.questionId);
-      const answer: number = Number(event.args.answer);
-      console.log("onAnswerSubmitted: Event received", {
+      const requestId: `0x${string}` = event.args.requestId;
+      console.log("onAnswerChecked:", {
         player,
-        questionId,
-        answer,
+        requestId,
         txHash: event.transactionHash,
-        blockNumber: Number(event.blockNumber),
-        timestamp: new Date().toISOString(),
       });
-      if (player.toLowerCase() !== address?.toLowerCase()) {
-        console.log("onAnswerSubmitted: Skipping, mismatch", {
-          player,
+      if (player.toLowerCase() !== address?.toLowerCase()) return;
+      setIsLoading(true);
+      try {
+        const isCorrect = await chainQuiz.verifyAnswer(
+          chainQuiz.quizId,
           address,
-          timestamp: new Date().toISOString(),
+          chainQuiz.questionIndex,
+          event.args?.selectedIndex ?? 0
+        );
+        console.log("onAnswerChecked success (backend verification):", {
+          isCorrect,
         });
-        return;
+        setEntryState("inQuiz");
+        setTimer(45);
+      } catch (err: any) {
+        console.error(
+          "onAnswerChecked error (backend verification):",
+          err.message
+        );
+        setErrorMessage(`Failed to verify answer via backend: ${err.message}`);
+        setEntryState("inQuiz");
+        setTimer(45);
+      } finally {
+        setIsLoading(false);
       }
-      setEntryState("inQuiz");
-      // Wait for AnswerResult event to determine if the answer was correct
     },
-    [address]
+    [chainQuiz, address]
   );
 
   const onAnswerResult = useCallback(
     (logs: any[]) => {
       const event = logs[0];
       const player: string = event.args.player;
-      const questionId: number = Number(event.args.questionId);
       const isCorrect: boolean = event.args.isCorrect;
-      console.log("onAnswerResult: Event received", {
+      const questionIndex: number = Number(event.args.questionIndex);
+      console.log("onAnswerResult:", {
         player,
-        questionId,
         isCorrect,
+        questionIndex,
         txHash: event.transactionHash,
-        blockNumber: Number(event.blockNumber),
-        timestamp: new Date().toISOString(),
       });
-      if (player.toLowerCase() !== address?.toLowerCase()) {
-        console.log("onAnswerResult: Skipping, mismatch", {
-          player,
-          address,
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+      if (player.toLowerCase() !== address?.toLowerCase()) return;
       if (isCorrect) {
         setCurrentIndex((i) => Math.min(i + 1, questions.length - 1));
       }
@@ -369,591 +668,124 @@ export default function Home() {
       const event = logs[0];
       const player: string = event.args.player;
       const score: number = Number(event.args.correctCount);
-      const rewardUSD: number = Number(event.args.rewardUSD);
-      console.log("onQuizCompleted: Event received", {
+      const rewardWei: bigint = event.args.reward;
+      const rewardUSDWei: bigint = event.args.rewardUSD;
+      console.log("onQuizCompleted:", {
         player,
         score,
-        rewardUSD,
-        txHash: event.transactionHash,
-        blockNumber: Number(event.blockNumber),
-        timestamp: new Date().toISOString(),
+        reward: formatEther(rewardWei),
+        rewardUSD: formatEther(rewardUSDWei),
       });
-      if (player.toLowerCase() !== address?.toLowerCase()) {
-        console.log("onQuizCompleted: Skipping, mismatch", {
-          player,
-          address,
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-      setReward(score.toString());
-      setRewardUSD(rewardUSD.toString());
+      if (player.toLowerCase() !== address?.toLowerCase()) return;
+      setReward(formatEther(rewardWei));
+      setRewardUSD(formatEther(rewardUSDWei));
       setEntryState("awaitingAnswer");
       fetchLeaderboard();
+      fetchBalance();
     },
-    [address, fetchLeaderboard]
+    [address, fetchLeaderboard, fetchBalance]
   );
 
   const onQuizCancelled = useCallback(
     (logs: any[]) => {
       const event = logs[0];
       const player: string = event.args.player;
-      console.log("onQuizCancelled: Event received", {
+      console.log("onQuizCancelled:", {
         player,
         txHash: event.transactionHash,
-        blockNumber: Number(event.blockNumber),
-        timestamp: new Date().toISOString(),
       });
-      if (player.toLowerCase() !== address?.toLowerCase()) {
-        console.log("onQuizCancelled: Skipping, mismatch", {
-          player,
-          address,
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
+      if (player.toLowerCase() !== address?.toLowerCase()) return;
       setEntryState("idle");
       setQuizId("");
       setQuestions([]);
       setCurrentIndex(0);
       setReward("");
       setRewardUSD("");
+      fetchBalance();
     },
-    [address]
+    [address, fetchBalance]
   );
 
-  const chainQuizAddress = process.env
-    .NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
-
-  const onVRFRequestInitiated = useCallback(
-    async (logs: any[]) => {
-      const event = logs[0];
-      const requestId: string = event.args.requestId.toString();
-      const player: string = event.args.player;
-      console.log("🔔 VRFRequestInitiated: Event received", {
-        requestId,
-        player,
-        txHash: event.transactionHash,
-        blockNumber: Number(event.blockNumber),
-        timestamp: new Date().toISOString(),
-      });
-      if (player.toLowerCase() !== address?.toLowerCase()) {
-        console.log("onVRFRequestInitiated: Skipping, player mismatch", {
-          player,
-          address,
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-      setVrfRequestId(requestId);
-
-      // Poll VRF request status until fulfilled
-      console.log("onVRFRequestInitiated: Polling VRF request status", {
-        requestId,
-        timestamp: new Date().toISOString(),
-      });
-      let attempts = 0;
-      const maxAttempts = 20; // 20 * 5s = 100s
-      let fulfilled = false;
-      while (!fulfilled && attempts < maxAttempts) {
-        try {
-          const result = (await quizContract?.read.getRequestStatus(
-            BigInt(requestId)
-          )) as boolean[];
-          const isFulfilled = result[0];
-          fulfilled = isFulfilled;
-          console.log("onVRFRequestInitiated: VRF status check", {
-            requestId,
-            fulfilled,
-            attempt: attempts + 1,
-            timestamp: new Date().toISOString(),
-          });
-          if (!fulfilled) {
-            await new Promise((resolve) => setTimeout(resolve, 5000)); // Wait 5 seconds
-            attempts++;
-          }
-        } catch (err: any) {
-          console.error("onVRFRequestInitiated: Error checking VRF status", {
-            requestId,
-            error: err.message,
-            timestamp: new Date().toISOString(),
-          });
-          attempts++;
-          await new Promise((resolve) => setTimeout(resolve, 5000));
-        }
-      }
-      if (!fulfilled) {
-        setErrorMessage("VRF request not fulfilled within timeout.");
-        console.error("onVRFRequestInitiated: VRF not fulfilled", {
-          requestId,
-          timestamp: new Date().toISOString(),
-        });
-        setEntryState("idle");
-        return;
-      }
-
-      // Call checkVRFAndGenerateQuiz
-      try {
-        console.log("onVRFRequestInitiated: Calling checkVRFAndGenerateQuiz", {
-          requestId,
-          timestamp: new Date().toISOString(),
-        });
-        const vrfResult = await quizContract?.write.checkVRFAndGenerateQuiz(
-          BigInt(requestId)
-        );
-        const vrfHash = vrfResult?.transactionHash;
-        console.log("✍️ checkVRFAndGenerateQuiz tx sent:", vrfHash, {
-          timestamp: new Date().toISOString(),
-        });
-        const receipt = await publicClient?.waitForTransactionReceipt({
-          hash: vrfHash,
-        });
-        console.log("✅ checkVRFAndGenerateQuiz confirmed:", {
-          status: receipt?.status,
-          gasUsed: receipt?.gasUsed.toString(),
-          transactionHash: vrfHash,
-          logs: receipt?.logs.length,
-          timestamp: new Date().toISOString(),
-        });
-        if (receipt?.status !== "success") {
-          let revertReason = "Unknown reason";
-          try {
-            const errorData = receipt?.logs.find(
-              (log) => log.topics[0] === "0x08c379a0"
-            );
-            if (errorData) {
-              const decoded = decodeErrorResult({
-                abi: [
-                  {
-                    name: "Error",
-                    type: "error",
-                    inputs: [{ type: "string" }],
-                  },
-                ],
-                data: errorData.data,
-              });
-              revertReason = decoded.args[0];
-            }
-          } catch (decodeErr) {
-            console.error("Failed to decode revert reason:", decodeErr);
-          }
-          throw new Error(
-            `checkVRFAndGenerateQuiz transaction reverted: ${revertReason}`
-          );
-        }
-      } catch (err: any) {
-        console.error(
-          "onVRFRequestInitiated: checkVRFAndGenerateQuiz error:",
-          err
-        );
-        setErrorMessage(`Failed to finalize VRF: ${err.message}`);
-        setEntryState("idle");
-      }
-    },
-    [address, quizContract, publicClient]
-  );
-
- useWatchContractEvent({
-  address: chainQuizAddress,
-  abi: ChainQuizABI,
-  eventName: "VRFRequestInitiated",
-  onLogs: (logs) =>
-    logs.forEach(async (log) => {
-      const player    = log.args.player;
-      const requestId = log.args.requestId; // bigint
-
-      if (player.toLowerCase() !== address?.toLowerCase()) return;
-
-      console.log("🔔 VRFRequestInitiated:", requestId.toString());
-
-      // immediately finalize the VRF on-chain
-      const { status, transactionHash } =
-        await quizContract?.write.checkVRFAndGenerateQuiz(requestId);
-      if (status === "success") {
-        console.log("✍️ checkVRFAndGenerateQuiz tx sent", transactionHash);
-        await publicClient?.waitForTransactionReceipt({ hash: transactionHash });
-        console.log("✅ checkVRFAndGenerateQuiz confirmed");
-      } else {
-        console.error("❌ checkVRFAndGenerateQuiz failed");
-      }
-    }),
-  enabled: !!quizContract && status === "connected",
-});
-
-
-  // Event Subscriptions
-
-  useWatchContractEvent({
-    address: chainQuizAddress,
-    abi: ChainQuizABI,
-    eventName: "QuizGenerated",
-    onLogs: onQuizGenerated,
-    enabled: !!quizContract && !!address && status === "connected",
-  });
-
-  useWatchContractEvent({
-    address: chainQuizAddress,
-    abi: ChainQuizABI,
-    eventName: "AnswerSubmitted",
-    onLogs: onAnswerSubmitted,
-    enabled: !!quizContract && !!address && status === "connected",
-  });
-
-  useWatchContractEvent({
-    address: chainQuizAddress,
-    abi: ChainQuizABI,
-    eventName: "AnswerResult",
-    onLogs: onAnswerResult,
-    enabled: !!quizContract && !!address && status === "connected",
-  });
-
-  useWatchContractEvent({
-    address: chainQuizAddress,
-    abi: ChainQuizABI,
-    eventName: "QuizCompleted",
-    onLogs: onQuizCompleted,
-    enabled: !!quizContract && !!address && status === "connected",
-  });
-
-  useWatchContractEvent({
-    address: chainQuizAddress,
-    abi: ChainQuizABI,
-    eventName: "QuizCancelled",
-    onLogs: onQuizCancelled,
-    enabled: !!quizContract && !!address && status === "connected",
-  });
-
-  useWatchContractEvent({
-    address: chainQuizAddress,
-    abi: ChainQuizABI,
-    eventName: "VRFRequestInitiated",
-    onLogs: onVRFRequestInitiated,
-    enabled: !!quizContract && !!address && status === "connected",
-  });
-
-  // Start Quiz
-  // page.tsx (replace startQuiz function)
-  const startQuiz = useCallback(async () => {
-    if (
-      !quizContract ||
-      !tokenContract ||
-      !publicClient ||
-      selectedDomains.length < 5 ||
-      !address
-    ) {
-      setErrorMessage(
-        "Select at least 5 domains, connect your wallet, or check contract configuration."
-      );
-      console.log("startQuiz: Invalid input", {
-        quizContract: !!quizContract,
-        tokenContract: !!tokenContract,
-        publicClient: !!publicClient,
-        selectedDomains,
-        address,
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    }
-    setErrorMessage("");
-    setEntryState("staking");
-    setIsLoading(true);
-
-    try {
-      const quizAddr =
-        process.env.NEXT_PUBLIC_CHAINQUIZ_ADDRESS ??
-        "0xB7E0a11c36C147F89f161DE392727C4A7a99761F";
-      const entryFee = BigInt(
-        process.env.NEXT_PUBLIC_ENTRY_FEE_IN_QUIZ ?? "10000000000000000"
-      ); // 0.01 ether
-
-      console.log("🚀 startQuiz → Config", {
-        quizAddr,
-        entryFee: entryFee.toString(),
-        selectedDomains,
-        address,
-        timestamp: new Date().toISOString(),
-      });
-
-      // Check $QUIZ balance
-      const balance = await tokenContract.read.balanceOf(address);
-      console.log("startQuiz: Balance", {
-        balance: balance.toString(),
-        timestamp: new Date().toISOString(),
-      });
-      if (balance < entryFee) {
-        throw new Error(
-          "Insufficient $QUIZ balance. Please acquire more tokens."
-        );
-      }
-
-      // Check allowance
-      const allowance = await tokenContract.read.allowance(address, quizAddr);
-      console.log("startQuiz: Allowance", {
-        allowance: allowance.toString(),
-        timestamp: new Date().toISOString(),
-      });
-      if (allowance < entryFee) {
-        console.log("🚀 startQuiz → Approving token", {
-          quizAddr,
-          entryFee: entryFee.toString(),
-          timestamp: new Date().toISOString(),
-        });
-        const approveHash = await tokenContract.write.approve([
-          quizAddr,
-          entryFee,
-        ]);
-        console.log("✍️ Approve tx sent:", approveHash, {
-          timestamp: new Date().toISOString(),
-        });
-        const receipt1 = await publicClient.waitForTransactionReceipt({
-          hash: approveHash,
-        });
-        console.log("✅ Approve confirmed:", {
-          status: receipt1.status,
-          gasUsed: receipt1.gasUsed.toString(),
-          transactionHash: approveHash,
-          timestamp: new Date().toISOString(),
-        });
-        if (receipt1.status !== "success") {
-          throw new Error("Approval transaction failed.");
-        }
-        const newAllowance = await tokenContract.read.allowance(
-          address,
-          quizAddr
-        );
-        console.log("startQuiz: New Allowance", {
-          newAllowance: newAllowance.toString(),
-          timestamp: new Date().toISOString(),
-        });
-        if (newAllowance < entryFee) {
-          throw new Error("Allowance approval failed to update.");
-        }
-      }
-
-      // Call startQuiz
-      console.log("🚀 startQuiz → Submitting on-chain", {
-        selectedDomains,
-        timestamp: new Date().toISOString(),
-      });
-      const startResult = await quizContract.write.startQuiz(selectedDomains);
-      const startHash = startResult.transactionHash;
-      console.log("✍️ startQuiz tx sent:", startHash, {
-        timestamp: new Date().toISOString(),
-      });
-      const receipt = await publicClient.waitForTransactionReceipt({
-        hash: startHash,
-      });
-      console.log("✅ startQuiz confirmed:", {
-        status: receipt.status,
-        gasUsed: receipt.gasUsed.toString(),
-        transactionHash: startHash,
-        logs: receipt.logs.length,
-        timestamp: new Date().toISOString(),
-      });
-      if (receipt.status !== "success") {
-        let revertReason = "Unknown reason";
-        try {
-          const errorData = receipt.logs.find(
-            (log) => log.topics[0] === "0x08c379a0"
-          );
-          if (errorData) {
-            const decoded = decodeErrorResult({
-              abi: [
-                { name: "Error", type: "error", inputs: [{ type: "string" }] },
-              ],
-              data: errorData.data,
-            });
-            revertReason = decoded.args[0];
-          }
-        } catch (decodeErr) {
-          console.error("Failed to decode revert reason:", decodeErr);
-        }
-        throw new Error(`startQuiz transaction reverted: ${revertReason}`);
-      }
-    } catch (err: any) {
-      console.error("❌ startQuiz error:", err);
-      let errorMsg = `Failed to start quiz: ${err.message}`;
-      if (err.message.includes("reverted")) {
-        errorMsg = `Transaction reverted: ${
-          err.message.split("reverted: ")[1] || "Unknown reason"
-        }`;
-      } else if (err.message.includes("rejected")) {
-        errorMsg = "Transaction rejected by user.";
-      } else if (err.message.includes("insufficient funds")) {
-        errorMsg = "Insufficient ETH for gas fees.";
-      }
-      console.error("startQuiz: Error", {
-        message: errorMsg,
-        details: err,
-        timestamp: new Date().toISOString(),
-      });
-      setErrorMessage(errorMsg);
-      setEntryState("idle");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [quizContract, tokenContract, publicClient, selectedDomains, address]);
-  // Submit Answer
-  const submitAnswer = useCallback(
-    async (selectedIndex: number) => {
-      console.log("submitAnswer: Starting", {
-        quizId,
-        questionId: questions[currentIndex]?.id,
-        selectedIndex,
-        timestamp: new Date().toISOString(),
-      });
-      if (!quizContract || !address || status !== "connected" || !quizId) {
-        console.error("submitAnswer: Invalid input", {
-          quizContract: !!quizContract,
-          address: !!address,
-          status,
-          quizId,
-          timestamp: new Date().toISOString(),
-        });
-        return;
-      }
-      setIsLoading(true);
-      try {
-        const apiUrl =
-          process.env.NEXT_PUBLIC_ELIZAOS_URL || "http://localhost:5000";
-        console.log("submitAnswer: Verifying answer with ELIZA", {
-          url: `${apiUrl}/verifyAnswer`,
-          payload: {
-            quizId,
-            questionId: questions[currentIndex]?.id,
-            selectedIndex,
-          },
-          timestamp: new Date().toISOString(),
-        });
-        const resp = await axios.post(`${apiUrl}/verifyAnswer`, {
-          quizId,
-          questionId: questions[currentIndex]?.id,
-          selectedIndex,
-        });
-        console.log("submitAnswer: ELIZA verify response", {
-          status: resp.status,
-          timestamp: new Date().toISOString(),
-        });
-        console.log("submitAnswer: Submitting on-chain", {
-          selectedIndex,
-          timestamp: new Date().toISOString(),
-        });
-        const submitHash = await quizContract.write.submitAnswer(selectedIndex);
-        console.log("submitAnswer: Transaction sent", {
-          txHash: submitHash,
-          timestamp: new Date().toISOString(),
-        });
-        const receipt = await publicClient.waitForTransactionReceipt({
-          hash: submitHash,
-        });
-        console.log("submitAnswer: Transaction confirmed", {
-          txHash: submitHash,
-          status: receipt?.status,
-          gasUsed: receipt?.gasUsed.toString(),
-          timestamp: new Date().toISOString(),
-        });
-      } catch (err: any) {
-        console.error("submitAnswer: Error", {
-          message: err.message,
-          error: err.response?.data || err,
-          timestamp: new Date().toISOString(),
-        });
-        setErrorMessage(
-          `Failed to submit answer: ${err.response?.data?.error || err.message}`
-        );
-        setEntryState("inQuiz");
-        setTimer(45);
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [
-      quizContract,
-      address,
-      status,
-      quizId,
-      questions,
-      currentIndex,
-      publicClient,
-    ]
-  );
-
-  // Cancel Quiz
-  const cancelQuiz = useCallback(async () => {
-    console.log("cancelQuiz: Starting", {
-      quizId,
-      timestamp: new Date().toISOString(),
-    });
-    if (!quizContract || !address || status !== "connected") {
-      console.error("cancelQuiz: Invalid input", {
-        quizContract: !!quizContract,
-        address: !!address,
-        status,
-        timestamp: new Date().toISOString(),
-      });
-      return;
-    }
-    setEntryState("awaitingAnswer");
-    setIsLoading(true);
-    try {
-      const cancelHash = await quizContract.write.cancelQuiz();
-      console.log("cancelQuiz: Transaction sent", {
-        cancelHash,
-        timestamp: new Date().toISOString(),
-      });
-      const receipt = await publicClient.waitForTransactionReceipt({
-        hash: cancelHash,
-      });
-      console.log("cancelQuiz: Transaction confirmed", {
-        cancelHash,
-        status: receipt.status,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err: any) {
-      console.error("cancelQuiz: Error", {
-        message: err.message,
-        timestamp: new Date().toISOString(),
-      });
-      setErrorMessage(`Failed to cancel quiz: ${err.message}`);
-      setEntryState("idle");
-    } finally {
-      setIsLoading(false);
-    }
-  }, [quizContract, address, status, quizId, publicClient]);
-
-  // Effects
   useEffect(() => {
-    console.log("Mount effect: Setting initial state", {
-      timestamp: new Date().toISOString(),
+    if (!isHooksInitialized) return;
+    console.log("entryState effect:", {
+      isActive: chainQuiz.isActive,
+      numQuestions: chainQuiz.numQuestions,
+      reward: chainQuiz.reward,
+      questionIndex: chainQuiz.questionIndex,
+      rewardUSD: chainQuiz.rewardUSD,
     });
-    setIsMounted(true);
-    setLastUpdated(new Date().toLocaleTimeString());
-    setDomains([
-      "DeFi",
-      "Oracles",
-      "Layer2",
-      "Tokenomics",
-      "ZeroKnowledge",
-      "NFT",
-      "CrossChain",
-      "Governance",
-      "DAOs",
-      "SmartContracts",
-      "WalletSecurity",
-      "Stablecoins",
-      "Chainlink",
-      "CCIP",
-      "VRF",
-      "Automation",
-      "DataFeeds",
-    ]);
+    if (chainQuiz.isActive && chainQuiz.numQuestions > 0) {
+      setEntryState("inQuiz");
+      setCurrentIndex(chainQuiz.questionIndex);
+    } else if (chainQuiz.isActive) {
+      setEntryState("staking");
+    } else if (chainQuiz.rewardUSD && chainQuiz.rewardUSD !== "0") {
+      setEntryState("awaitingAnswer");
+    } else {
+      setEntryState("idle");
+      setQuestions([]);
+      setCurrentIndex(0);
+      setTimer(45);
+    }
+  }, [
+    chainQuiz.isActive,
+    chainQuiz.numQuestions,
+    chainQuiz.rewardUSD,
+    chainQuiz.questionIndex,
+    isHooksInitialized,
+  ]);
+
+  useEffect(() => {
+    async function fetchInitialData() {
+      const { data, error } = await supabase.from("Quizzes").select("*");
+      console.log("Quizzes data:", data, "Error:", error);
+      setIsLoading(false);
+      setDomains([
+        "DeFi",
+        "Oracles",
+        "Layer2",
+        "Tokenomics",
+        "ZeroKnowledge",
+        "NFT",
+        "CrossChain",
+        "Governance",
+        "DAOs",
+        "SmartContracts",
+        "WalletSecurity",
+        "Stablecoins",
+        "Chainlink",
+        "CCIP",
+        "VRF",
+        "Automation",
+        "DataFeeds",
+      ]);
+      setLastUpdated(new Date().toLocaleTimeString());
+    }
+    fetchInitialData();
   }, []);
 
   useEffect(() => {
-    if (questions.length) {
-      console.log("🏗️ questions state updated:", questions);
-    }
+    if (questions.length) console.log("Questions updated:", questions);
   }, [questions]);
+
+  useEffect(() => {
+    if (
+      !isHooksInitialized ||
+      !["inQuiz", "awaitingAnswer"].includes(entryState)
+    )
+      return;
+    if (timer === 0) {
+      submitAnswer(255);
+      return;
+    }
+    timerRef.current = setTimeout(() => setTimer((t) => t - 1), 1000);
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    };
+  }, [isHooksInitialized, timer, entryState, submitAnswer]);
 
   useEffect(() => {
     console.log("Leaderboard effect: Starting periodic fetch", {
@@ -969,268 +801,320 @@ export default function Home() {
     };
   }, [fetchLeaderboard]);
 
-  useEffect(() => {
-    if (!["inQuiz", "awaitingAnswer"].includes(entryState)) return;
-    if (timer === 0) {
-      submitAnswer(255); // Timeout
-      return;
-    }
-    timerRef.current = setTimeout(() => setTimer((t) => t - 1), 1000);
-    return () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
-    };
-  }, [timer, entryState, submitAnswer]);
+  // Event Subscriptions
+  useWatchContractEvent({
+    address: CHAIN_QUIZ_ADDRESS,
+    abi: chainQuizABI,
+    eventName: "QuizRequested",
+    onLogs: onQuizRequested,
+    enabled: !!address && status === "connected",
+  });
 
-  // Early returns
-  if (!isMounted) {
-    return (
-      <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
-        <header className="flex justify-between items-center p-6 bg-gray-800/70 backdrop-blur-sm">
-          <h1 className="text-3xl font-bold text-blue-400">ChainQuiz</h1>
-          <ConnectButton showBalance={false} />
-        </header>
-        <main className="flex-1 p-6">
-          <div className="flex items-center justify-center min-h-screen">
-            <div className="text-center">
-              <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-400 mb-4"></div>
-              <p className="text-gray-400 text-sm">Loading...</p>
-            </div>
-          </div>
-        </main>
-      </div>
-    );
-  }
+  useWatchContractEvent({
+    address: CHAIN_QUIZ_ADDRESS,
+    abi: chainQuizABI,
+    eventName: "QuizGenerated",
+    onLogs: onQuizGenerated,
+    enabled: !!address && status === "connected",
+  });
 
-  if (!quizContract || !tokenContract) {
-    return (
-      <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
-        <header className="flex justify-between items-center p-6 bg-gray-800/70 backdrop-blur-sm">
-          <h1 className="text-3xl font-bold text-blue-400">ChainQuiz</h1>
-          <ConnectButton showBalance={false} />
-        </header>
-        <main className="flex-1 p-6">
-          <p className="text-center text-red-400">
-            Error: Contract addresses or RPC URL not configured. Check
-            NEXT_PUBLIC_PROPERTIES in .env.local.
-          </p>
-        </main>
-      </div>
-    );
-  }
+  useWatchContractEvent({
+    address: CHAIN_QUIZ_ADDRESS,
+    abi: chainQuizABI,
+    eventName: "AnswerChecked",
+    onLogs: onAnswerChecked,
+    enabled: !!address && status === "connected",
+  });
+
+  useWatchContractEvent({
+    address: CHAIN_QUIZ_ADDRESS,
+    abi: chainQuizABI,
+    eventName: "AnswerResult",
+    onLogs: onAnswerResult,
+    enabled: !!address && status === "connected",
+  });
+
+  useWatchContractEvent({
+    address: CHAIN_QUIZ_ADDRESS,
+    abi: chainQuizABI,
+    eventName: "QuizCompleted",
+    onLogs: onQuizCompleted,
+    enabled: !!address && status === "connected",
+  });
+
+  useWatchContractEvent({
+    address: CHAIN_QUIZ_ADDRESS,
+    abi: chainQuizABI,
+    eventName: "QuizCancelled",
+    onLogs: onQuizCancelled,
+    enabled: true,
+  });
 
   return (
     <ErrorBoundary>
       <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
-        <header className="flex justify-between items-center p-5 bg-gray-800/70 backdrop-blur-sm">
-          <h1 className="text-3xl font-bold text-blue-400">ChainQuiz</h1>
+        <header className="flex items-center justify-between p-4 bg-gray-800/20 backdrop-blur">
+          <h1 className="text-2xl font-bold text-blue-600">ChainQuiz</h1>
           <ConnectButton showBalance={false} />
         </header>
 
         <main className="flex-1 p-6 space-y-6">
-          {errorMessage && (
-            <div className="p-4 bg-red-500/20 border border-red-500 rounded-lg">
-              <p className="text-red-400">{errorMessage}</p>
-              <button
-                onClick={() => setErrorMessage("")}
-                className="mt-2 text-sm text-blue-400 hover:text-blue-300"
-              >
-                Dismiss
-              </button>
-            </div>
-          )}
-
-          {status === "connected" && address && (
-            <div className="flex justify-end gap-4">
-              <p className="text-sm text-gray-400 truncate max-w-[12rem]">
-                {address}
-              </p>
-              <p className="text-sm text-blue-400">{balance} QUIZ</p>
-            </div>
-          )}
-
-          {status === "connected" && address && entryState === "idle" && (
-            <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
-              <h2 className="text-xl font-semibold text-gray-100">
-                Select 5+ Domains
-              </h2>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-                {domains.map((d) => (
-                  <button
-                    key={d}
-                    onClick={() =>
-                      setSelectedDomains((sd) =>
-                        sd.includes(d) ? sd.filter((x) => x !== d) : [...sd, d]
-                      )
-                    }
-                    className={`p-2 rounded-lg border text-sm ${
-                      selectedDomains.includes(d)
-                        ? "bg-blue-500 text-white border-blue-500"
-                        : "bg-gray-700 text-gray-200 border-gray-600 hover:bg-gray-600"
-                    }`}
-                  >
-                    {d}
-                  </button>
-                ))}
+          {isLoading ? (
+            <div className="flex items-center justify-center min-h-[calc(100vh-80px)]">
+              <div className="text-center">
+                <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-2"></div>
+                <p className="text-gray-500 text-lg">Loading...</p>
               </div>
-              <h2 className="text-xl font-semibold text-gray-100">
-                Select Difficulty
-              </h2>
-              <div className="flex gap-3">
-                {["Easy", "Medium", "Hard"].map((diff) => (
+            </div>
+          ) : (
+            <>
+              {!isValidConfig && (
+                <div className="p-4 bg-red-500/20 border border-red-600 rounded-lg text-center">
+                  <p className="text-red-500">
+                    Error: Invalid contract addresses. Check
+                    NEXT_PUBLIC_CHAINQUIZ_ADDRESS and
+                    NEXT_PUBLIC_QUIZ_TOKEN_ADDRESS in .env.local
+                  </p>
+                </div>
+              )}
+
+              {isValidConfig && !isHooksInitialized && (
+                <div className="p-4 bg-red-500/20 border border-red-600 rounded-lg text-center">
+                  <p className="text-red-500">
+                    Error: Contract hooks not initialized. Ensure wallet is
+                    connected and environment variables are set.
+                  </p>
+                </div>
+              )}
+
+              {errorMessage && (
+                <div className="p-4 bg-red-400/10 border border-red-600 rounded-lg text-center">
+                  <p className="text-red-500">{errorMessage}</p>
                   <button
-                    key={diff}
-                    onClick={() =>
-                      setDifficulty(diff as "Easy" | "Medium" | "Hard")
-                    }
-                    className={`p-2 rounded-lg border text-sm ${
-                      difficulty === diff
-                        ? "bg-blue-500 text-white border-blue-500"
-                        : "bg-gray-700 text-gray-200 border-gray-600 hover:bg-gray-600"
-                    }`}
+                    onClick={() => setErrorMessage("")}
+                    className="mt-2 text-sm text-blue-500 hover:text-blue-400"
                   >
-                    {diff}
+                    Dismiss
                   </button>
-                ))}
-              </div>
-              <button
-                onClick={startQuiz}
-                disabled={
-                  selectedDomains.length < 5 ||
-                  entryState !== "idle" ||
-                  isLoading
-                }
-                className="mt-4 w-full p-3 bg-blue-500 hover:bg-blue-600 rounded-xl text-lg font-semibold text-white disabled:bg-gray-600 disabled:cursor-not-allowed relative"
-              >
-                {isLoading && (
-                  <div className="absolute inset-0 flex items-center justify-center">
-                    <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-white"></div>
+                </div>
+              )}
+
+              {status === "connected" && address && (
+                <div className="flex justify-end gap-3 items-center">
+                  <p className="text-base text-gray-500 truncate max-w-[10rem]">
+                    {address}
+                  </p>
+                  <p className="text-base text-blue-500">{balance} QUIZ</p>
+                </div>
+              )}
+
+              {isHooksInitialized &&
+                status === "connected" &&
+                address &&
+                entryState === "idle" && (
+                  <div className="p-4 bg-white/5 rounded-lg shadow-lg space-y-4">
+                    <h2 className="text-lg font-semibold text-gray-200">
+                      Select 5+ Domains
+                    </h2>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                      {domains.map((value) => (
+                        <button
+                          key={value}
+                          onClick={() =>
+                            setSelectedDomains((prev) =>
+                              prev.includes(value)
+                                ? prev.filter((x) => x !== value)
+                                : [...prev, value]
+                            )
+                          }
+                          className={`p-2 rounded-lg border text-sm ${
+                            selectedDomains.includes(value)
+                              ? "bg-blue-600 text-white border-blue-600"
+                              : "bg-gray-700/50 text-gray-300 border-gray-300 hover:bg-gray-400/20"
+                          }`}
+                        >
+                          {value}
+                        </button>
+                      ))}
+                    </div>
+                    <h2 className="text-lg font-semibold text-gray-200">
+                      Select Difficulty
+                    </h2>
+                    <div className="flex gap-2">
+                      {["Easy", "Medium", "Hard"].map((diff) => (
+                        <button
+                          key={diff}
+                          onClick={() =>
+                            setDifficulty(diff as "Easy" | "Medium" | "Hard")
+                          }
+                          className={`p-2 rounded-lg border text-sm ${
+                            difficulty === diff
+                              ? "bg-blue-600 text-white border-blue-600"
+                              : "bg-gray-700/50 text-gray-300 border-gray-300 hover:bg-gray-400/20"
+                          }`}
+                        >
+                          {diff}
+                        </button>
+                      ))}
+                    </div>
+                    <button
+                      onClick={startQuiz}
+                      disabled={
+                        selectedDomains.length < 5 ||
+                        entryState !== "idle" ||
+                        isLoading ||
+                        status !== "connected" ||
+                        !address
+                      }
+                      className="mt-2 w-full py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-semibold disabled:bg-gray-600 disabled:cursor-not-allowed relative"
+                    >
+                      {isLoading && entryState === "staking" ? (
+                        <span className="flex items-center justify-center">
+                          <span className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></span>
+                          Starting Quiz...
+                        </span>
+                      ) : (
+                        "Start Quiz"
+                      )}
+                    </button>
                   </div>
                 )}
-                <span className={isLoading ? "opacity-0" : ""}>
-                  {entryState === "staking"
-                    ? "Staking 0.01 QUIZ..."
-                    : `Start Quiz (${selectedDomains.length} Domains, ${difficulty})`}
-                </span>
-              </button>
-            </div>
-          )}
 
-          {status === "connected" &&
-            address &&
-            entryState === "inQuiz" &&
-            questions.length > 0 && (
-              <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
-                <h2 className="text-xl font-semibold text-gray-100">
-                  Question {currentIndex + 1}/{questions.length}
-                </h2>
-                <p className="text-base text-gray-200">
-                  {questions[currentIndex]?.text || "Loading..."}
-                </p>
-                <div className="grid grid-cols-1 gap-2">
-                  {Array.isArray(questions[currentIndex]?.options) ? (
-                    questions[currentIndex].options.map(
-                      (opt: string, idx: number) => (
-                        <button
-                          key={idx}
-                          onClick={() => submitAnswer(idx)}
-                          disabled={isLoading}
-                          className="p-2 bg-gray-700 hover:bg-gray-600 rounded-lg text-left text-sm text-gray-200 disabled:opacity-50 disabled:cursor-not-allowed relative"
-                        >
-                          {isLoading && (
-                            <div className="absolute inset-0 flex items-center justify-center">
-                              <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-gray-400"></div>
-                            </div>
-                          )}
-                          <span className={isLoading ? "opacity-0" : ""}>
-                            {opt}
-                          </span>
-                        </button>
+              {isHooksInitialized &&
+                entryState === "inQuiz" &&
+                questions.length > 0 && (
+                  <div className="p-6 bg-gray-800 rounded-lg shadow-xl space-y-6">
+                    <div className="flex justify-between items-center text-lg font-medium">
+                      <span>
+                        Question {currentIndex + 1} / {questions.length}
+                      </span>
+                      <span className="text-blue-400">Time: {timer}s</span>
+                    </div>
+                    <h2 className="text-2xl font-bold text-gray-100 mb-4">
+                      {questions[currentIndex]?.text}
+                    </h2>
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {questions[currentIndex]?.options.map(
+                        (option: string, i: number) => (
+                          <button
+                            key={i}
+                            onClick={() => submitAnswer(i)}
+                            disabled={isLoading || entryState !== "inQuiz"}
+                            className="w-full p-4 bg-gray-700 hover:bg-blue-600 rounded-lg text-left transition duration-200 disabled:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            {option}
+                          </button>
+                        )
+                      )}
+                    </div>
+                    <button
+                      onClick={cancelQuiz}
+                      disabled={isLoading}
+                      className="mt-4 w-full py-2 bg-red-600 hover:bg-red-700 rounded-lg text-white font-semibold disabled:bg-gray-600 disabled:cursor-not-allowed"
+                    >
+                      Cancel Quiz
+                    </button>
+                  </div>
+                )}
+
+              {isHooksInitialized &&
+                entryState === "awaitingAnswer" &&
+                chainQuiz.rewardUSD &&
+                chainQuiz.rewardUSD !== "0" && (
+                  <div className="p-6 bg-green-800/20 rounded-lg shadow-xl space-y-4 text-center border border-green-700">
+                    <h2 className="text-3xl font-bold text-green-400">
+                      Quiz Completed!
+                    </h2>
+                    <p className="text-xl text-gray-200">
+                      You earned:{" "}
+                      <span className="font-bold text-green-300">
+                        {chainQuiz.reward} $QUIZ
+                      </span>{" "}
+                      (Approx.{" "}
+                      <span className="font-bold text-green-300">
+                        ${chainQuiz.rewardUSD}
+                      </span>
                       )
-                    )
-                  ) : (
-                    <p className="text-sm text-red-400">No options available</p>
-                  )}
-                </div>
-                <div className="flex justify-between items-center">
-                  <p className="text-sm text-gray-400">Time Left: {timer}s</p>
-                  <button
-                    onClick={() => submitAnswer(255)}
-                    className="px-2 py-1 text-xs text-blue-400 hover:text-blue-300"
-                  >
-                    Skip (Timeout)
-                  </button>
-                </div>
-              </div>
-            )}
+                    </p>
+                    <button
+                      onClick={() => {
+                        setEntryState("idle");
+                        setQuestions([]);
+                        setCurrentIndex(0);
+                        chainQuiz.setReward("");
+                        chainQuiz.setRewardUSD("");
+                      }}
+                      className="mt-4 px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-semibold"
+                    >
+                      Play Again
+                    </button>
+                  </div>
+                )}
 
-          {status === "connected" &&
-            address &&
-            entryState === "awaitingAnswer" && (
-              <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4 text-center">
-                <h2 className="text-xl font-semibold text-gray-100">
-                  Quiz Completed!
-                </h2>
-                <p className="text-base text-gray-200">
-                  You earned {reward || "0"} QUIZ (~${rewardUSD || "0"} USD)
-                </p>
-                <button
-                  onClick={cancelQuiz}
-                  disabled={isLoading}
-                  className="p-2 bg-red-500 hover:bg-red-600 rounded-lg text-sm text-white disabled:bg-gray-600 disabled:cursor-not-allowed relative"
-                >
-                  {isLoading && (
-                    <div className="absolute inset-0 flex items-center justify-center">
-                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+              {isHooksInitialized && entryState === "staking" && (
+                <div className="p-6 bg-blue-800/20 rounded-lg shadow-xl space-y-4 text-center border border-blue-700">
+                  <h2 className="text-2xl font-bold text-blue-400">
+                    Waiting for Quiz Generation...
+                  </h2>
+                  <p className="text-gray-200">
+                    Please wait while the quiz is being generated on-chain. This
+                    may take a moment.
+                  </p>
+                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                  {errorMessage && (
+                    <div>
+                      <p className="text-red-500 mt-2">{errorMessage}</p>
+                      <button
+                        onClick={() => {
+                          setErrorMessage("");
+                          setEntryState("idle");
+                          setIsLoading(false);
+                        }}
+                        className="mt-4 px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-semibold"
+                      >
+                        Retry
+                      </button>
                     </div>
                   )}
-                  <span className={isLoading ? "opacity-0" : ""}>
-                    Cancel Quiz & Refund
+                </div>
+              )}
+              <div className="p-4 bg-white/5 rounded-lg shadow-lg space-y-2">
+                <h2 className="text-lg font-semibold text-gray-200 flex justify-between items-center">
+                  Leaderboard
+                  <span className="text-sm text-gray-400">
+                    Last updated: {lastUpdated}
                   </span>
-                </button>
+                </h2>
+                {leaderboard.length === 0 ? (
+                  <p className="text-gray-400 text-center">
+                    No scores yet. Be the first to play!
+                  </p>
+                ) : (
+                  <ul className="space-y-1">
+                    {leaderboard.map((entry, index) => (
+                      <li
+                        key={index}
+                        className="flex justify-between items-center text-gray-300"
+                      >
+                        <span className="font-mono text-blue-400">
+                          {index + 1}. {entry.address.slice(0, 6)}...
+                          {entry.address.slice(-4)}
+                        </span>
+                        <span className="font-semibold text-white">
+                          {entry.score} pts
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
-            )}
-
-          <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
-            <h2 className="text-xl font-semibold text-gray-100">Debug Tools</h2>
-            <button
-              onClick={() =>
-                debugFetchQuestions(quizId || `temp_${vrfRequestId}`)
-              }
-              className="p-2 bg-yellow-400 hover:bg-yellow-500 rounded-lg text-sm text-gray-900"
-            >
-              Debug Fetch Questions
-            </button>
-          </div>
-
-          <div className="p-6 bg-gray-800/80 rounded-2xl shadow-md space-y-4">
-            <h2 className="text-xl font-semibold text-gray-100">
-              Leaderboard (Top 5)
-            </h2>
-            <table className="w-full text-left text-gray-200 text-sm">
-              <thead>
-                <tr className="border-b border-gray-600">
-                  <th className="px-2 py-3">Rank</th>
-                  <th className="px-2 py-3">Address</th>
-                  <th className="px-2 py-3">Score</th>
-                </tr>
-              </thead>
-              <tbody>
-                {leaderboard.map((row, i) => (
-                  <tr key={row.address} className="border-b border-gray-700">
-                    <td className="px-2 py-3">{i + 1}</td>
-                    <td className="px-2 py-3 truncate max-w-[150px]">
-                      {row.address}
-                    </td>
-                    <td className="px-2 py-3">{row.score}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <p className="text-xs text-gray-400">Last updated: {lastUpdated}</p>
-          </div>
+            </>
+          )}
         </main>
+
+        <footer className="p-4 text-center text-gray-500 text-sm bg-gray-800/20 backdrop-blur">
+          Powered by Chainlink & Supabase
+        </footer>
       </div>
     </ErrorBoundary>
   );
