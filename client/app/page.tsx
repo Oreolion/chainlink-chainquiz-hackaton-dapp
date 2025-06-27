@@ -12,7 +12,7 @@ import { useChainQuiz } from "../src/hooks/useChainQuiz";
 import { supabase } from "../src/utils/supabaseClient";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { formatEther, isAddress } from "viem";
-import { keccak256,  stringToHex } from "viem";
+import { keccak256, stringToHex } from "viem";
 import chainQuizABI from "../src/abis/ChainQuizABI.json";
 
 // Environment variables
@@ -96,6 +96,8 @@ export default function Home() {
   const [quizId, setQuizId] = useState<string>("");
   const [reward, setReward] = useState<string>("");
   const [rewardUSD, setRewardUSD] = useState<string>("");
+  const [answerFeedback, setAnswerFeedback] = useState<string>("");
+  const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
   const hasFetched = useRef(false);
 
   const timerRef = useRef<NodeJS.Timeout | null>(null);
@@ -235,83 +237,84 @@ export default function Home() {
   }, []);
 
   // Debug Generate Questions
-const debugGenerateQuestions = useCallback(async () => {
-  if (!address || !chainQuiz) {
-    setErrorMessage("Connect wallet to generate questions");
-    return;
-  }
-  setIsLoading(true);
-  try {
-    // 1) numeric ID for Supabase `id` (bigint)
-    const numericId = BigInt(Date.now());
-    // 2) human‐friendly quizId
-    const quizId = `quiz-${numericId}`;
-    // 3) make a 32-byte requestId by hashing the hexified quizId
-    const mockRequestId = keccak256(stringToHex(quizId)) as `0x${string}`;
-
-    // 4) mock up your 10 questions
-    const mockQuestions = Array.from({ length: 10 }, (_, i) => ({
-      id:   `q${i + 1}`,
-      domain: selectedDomains[i % selectedDomains.length],
-      text: `Question ${i + 1} — ${selectedDomains[i % selectedDomains.length]} (${difficulty})`,
-      options: ["Option 1 (Correct)", "Option 2", "Option 3", "Option 4"],
-      correctIndex: 0,
-    }));
-
-    // 5) insert into Supabase (id: bigint, quiz_id: text)
-    const { error } = await supabase.from("Quizzes").insert({
-      id: Number(numericId),     // your bigint PK
-      quiz_id: quizId,           // a text column
-      player_address: address.toLowerCase(),
-      domains: selectedDomains,
-      difficulty: difficulty.toLowerCase(),
-      questions: mockQuestions,
-      started_at: new Date().toISOString(),
-      correct_count: 0,
-      completed_at: null,
-    });
-
-    if (error) {
-      console.error("Supabase insert failed:", error);
-      // refund & cancel on‐chain if Supabase fails
-      try {
-        await chainQuiz.cancelQuiz();
-        console.log("Cancelled on-chain quiz due to Supabase error.");
-      } catch (cErr: any) {
-        console.error("Failed to cancel on-chain quiz:", cErr);
-      }
-      throw new Error(error.message);
+  const debugGenerateQuestions = useCallback(async () => {
+    if (!address || !chainQuiz) {
+      setErrorMessage("Connect wallet to generate questions");
+      return;
     }
+    setIsLoading(true);
+    try {
+      // 1) numeric ID for Supabase `id` (bigint)
+      const numericId = BigInt(Date.now());
+      // 2) human‐friendly quizId
+      const quizId = `quiz-${numericId}`;
+      // 3) make a 32-byte requestId by hashing the hexified quizId
+      const mockRequestId = keccak256(stringToHex(quizId)) as `0x${string}`;
 
-    // 6) build your "response" bytes, e.g. "quiz-1234567890|10"
-    const responseHex = stringToHex(`${quizId}|10`);
-    await chainQuiz.debugFulfillRequest(mockRequestId, responseHex, "0x");
+      // 4) mock up your 10 questions
+      const mockQuestions = Array.from({ length: 10 }, (_, i) => ({
+        id: `q${i + 1}`,
+        domain: selectedDomains[i % selectedDomains.length],
+        text: `Question ${i + 1} — ${
+          selectedDomains[i % selectedDomains.length]
+        } (${difficulty})`,
+        options: ["Option 1 (Correct)", "Option 2", "Option 3", "Option 4"],
+        correctIndex: 0,
+      }));
 
-    // 7) drive the UI into quiz mode
-    setQuizId(quizId);
-    setQuestions(mockQuestions);
-    setCurrentIndex(0);
-    setEntryState("inQuiz");
-    setTimer(45);
-  } catch (err: any) {
-    console.error("debugGenerateQuestions error:", err);
-    setErrorMessage(`Failed to generate questions: ${err.message}`);
-    setEntryState("idle");
-  } finally {
-    setIsLoading(false);
-  }
-}, [
-  address,
-  chainQuiz,
-  selectedDomains,
-  difficulty,
-  setQuizId,
-  setQuestions,
-  setCurrentIndex,
-  setEntryState,
-  setTimer,
-]);
+      // 5) insert into Supabase (id: bigint, quiz_id: text)
+      const { error } = await supabase.from("Quizzes").insert({
+        id: Number(numericId), // your bigint PK
+        quiz_id: quizId, // a text column
+        player_address: address.toLowerCase(),
+        domains: selectedDomains,
+        difficulty: difficulty.toLowerCase(),
+        questions: mockQuestions,
+        started_at: new Date().toISOString(),
+        correct_count: 0,
+        completed_at: null,
+      });
 
+      if (error) {
+        console.error("Supabase insert failed:", error);
+        // refund & cancel on‐chain if Supabase fails
+        try {
+          await chainQuiz.cancelQuiz();
+          console.log("Cancelled on-chain quiz due to Supabase error.");
+        } catch (cErr: any) {
+          console.error("Failed to cancel on-chain quiz:", cErr);
+        }
+        throw new Error(error.message);
+      }
+
+      // 6) build your "response" bytes, e.g. "quiz-1234567890|10"
+      const responseHex = stringToHex(`${quizId}|10`);
+      await chainQuiz.debugFulfillRequest(mockRequestId, responseHex, "0x");
+
+      // 7) drive the UI into quiz mode
+      setQuizId(quizId);
+      setQuestions(mockQuestions);
+      setCurrentIndex(0);
+      setEntryState("inQuiz");
+      setTimer(45);
+    } catch (err: any) {
+      console.error("debugGenerateQuestions error:", err);
+      setErrorMessage(`Failed to generate questions: ${err.message}`);
+      setEntryState("idle");
+    } finally {
+      setIsLoading(false);
+    }
+  }, [
+    address,
+    chainQuiz,
+    selectedDomains,
+    difficulty,
+    setQuizId,
+    setQuestions,
+    setCurrentIndex,
+    setEntryState,
+    setTimer,
+  ]);
   // Debug Submit Answer
   const debugSubmitAnswer = useCallback(
     async (selectedIndex: number, isCorrect: boolean) => {
@@ -527,7 +530,29 @@ const debugGenerateQuestions = useCallback(async () => {
     difficulty,
     fetchBalance,
     debugGenerateQuestions,
+    ENTRY_FEE
   ]);
+
+  const handleTimeout = useCallback(() => {
+    setAnswerFeedback("Time's up!");
+    setTimeout(() => {
+      setAnswerFeedback("");
+      setSelectedAnswer(null);
+      if (currentIndex + 1 < questions.length) {
+        setCurrentIndex(currentIndex + 1);
+        setTimer(45);
+      } else {
+        setEntryState("completed");
+        supabase
+          .from("Quizzes")
+          .update({ completed_at: new Date().toISOString() })
+          .eq("quizid", quizId)
+          .then(({ error }) => {
+            if (error) console.error("Quiz completion update failed", error);
+          });
+      }
+    }, 2000);
+  }, [currentIndex, questions, quizId, setCurrentIndex, setEntryState]);
 
   useEffect(() => {
     if (entryState !== "staking") return;
@@ -543,6 +568,77 @@ const debugGenerateQuestions = useCallback(async () => {
     }, 30_000); // 30 seconds
     return () => clearTimeout(timeout);
   }, [entryState]);
+
+  useEffect(() => {
+    let timerInterval: NodeJS.Timeout;
+    if (entryState === "inQuiz" && timer > 0) {
+      timerInterval = setInterval(() => {
+        setTimer((prev) => {
+          if (prev <= 1) {
+            clearInterval(timerInterval);
+            handleTimeout();
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => clearInterval(timerInterval);
+  }, [entryState, timer, handleTimeout]);
+
+  const handleAnswer = useCallback(
+    async (selectedIndex: number) => {
+      if (!questions[currentIndex]) return;
+      setSelectedAnswer(selectedIndex);
+      const isCorrect = selectedIndex === questions[currentIndex].correctIndex;
+      setAnswerFeedback(isCorrect ? "Correct!" : "Incorrect");
+
+      // Update Supabase
+      try {
+        const { error } = await supabase
+          .from("Quizzes")
+          .update({
+            correct_count: isCorrect
+              ? sql`correct_count + 1`
+              : sql`correct_count`,
+          })
+          .eq("quizid", quizId);
+        if (error) {
+          console.error("handleAnswer: Supabase update failed", {
+            message: error.message,
+            details: error,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      } catch (err: any) {
+        console.error("handleAnswer error:", {
+          message: err.message,
+          details: err,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Progress to next question
+      setTimeout(() => {
+        setAnswerFeedback("");
+        setSelectedAnswer(null);
+        if (currentIndex + 1 < questions.length) {
+          setCurrentIndex(currentIndex + 1);
+          setTimer(45);
+        } else {
+          setEntryState("completed");
+          supabase
+            .from("Quizzes")
+            .update({ completed_at: new Date().toISOString() })
+            .eq("quizid", quizId)
+            .then(({ error }) => {
+              if (error) console.error("Quiz completion update failed", error);
+            });
+        }
+      }, 2000); // Show feedback for 2 seconds
+    },
+    [currentIndex, questions, quizId, setCurrentIndex, setEntryState]
+  );
 
   // in your Home component, after you do `startQuiz`:
 
@@ -1040,6 +1136,88 @@ const debugGenerateQuestions = useCallback(async () => {
                     </button>
                   </div>
                 )}
+
+              {isHooksInitialized &&
+                status === "connected" &&
+                address &&
+                entryState === "inQuiz" &&
+                entryState === "staking" && (
+                  <div className="p-6 bg-blue-800/20 rounded-lg shadow-xl space-y-4">
+                    <h2 className="text-2xl font-bold text-blue-400">
+                      Quiz in Progress (Question {currentIndex + 1}/10)
+                    </h2>
+                    <p className="text-gray-200">
+                      Time remaining: {timer} seconds
+                    </p>
+                    {questions.length > 0 && currentIndex < questions.length ? (
+                      <div>
+                        <p className="text-gray-200">
+                          {questions[currentIndex].text}
+                        </p>
+                        <ul className="space-y-2">
+                          {questions[currentIndex].options.map(
+                            (option, idx) => (
+                              <li key={idx}>
+                                <button
+                                  onClick={() => handleAnswer(idx)}
+                                  disabled={selectedAnswer !== null}
+                                  className={`w-full p-2 rounded text-white ${
+                                    selectedAnswer === idx
+                                      ? idx ===
+                                        questions[currentIndex].correctIndex
+                                        ? "bg-green-600"
+                                        : "bg-red-600"
+                                      : "bg-gray-700 hover:bg-gray-600"
+                                  } disabled:bg-gray-500 disabled:cursor-not-allowed`}
+                                >
+                                  {option}
+                                </button>
+                              </li>
+                            )
+                          )}
+                        </ul>
+                        {answerFeedback && (
+                          <p
+                            className={`mt-2 ${
+                              answerFeedback === "Correct!"
+                                ? "text-green-500"
+                                : "text-red-500"
+                            }`}
+                          >
+                            {answerFeedback}
+                          </p>
+                        )}
+                      </div>
+                    ) : (
+                      <p className="text-red-500">No questions available</p>
+                    )}
+                  </div>
+                )}
+              {entryState === "completed" && (
+                <div className="p-6 bg-blue-800/20 rounded-lg shadow-xl space-y-4 text-center">
+                  <h2 className="text-2xl font-bold text-blue-400">
+                    Quiz Completed!
+                  </h2>
+                  <p className="text-gray-200">
+                    Check your results in the dashboard.
+                  </p>
+                  <button
+                    onClick={() => {
+                      setEntryState("idle");
+                      setQuestions([]);
+                      setCurrentIndex(0);
+                      setQuizId("");
+                      setTimer(0);
+                      setAnswerFeedback("");
+                      setSelectedAnswer(null);
+                      fetchBalance();
+                    }}
+                    className="px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-semibold"
+                  >
+                    Start New Quiz
+                  </button>
+                </div>
+              )}
 
               {/* Cancel button: only when we’re staking or already in-quiz */}
               {isHooksInitialized &&

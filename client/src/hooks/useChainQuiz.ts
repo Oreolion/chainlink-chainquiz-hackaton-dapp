@@ -329,7 +329,8 @@ export function useChainQuiz() {
           playerAddress,
           difficulty,
         });
-        const res = await fetch(`${BACKEND_URL}/generateQuiz`, {
+        // const res = await fetch(`${BACKEND_URL}/generateQuiz`, {
+        const res = await fetch(`api/generateQuiz`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ quizId, domains, playerAddress, difficulty }),
@@ -363,7 +364,8 @@ export function useChainQuiz() {
           questionIndex,
           answer,
         });
-        const res = await fetch(`${BACKEND_URL}/verifyAnswer`, {
+        // const res = await fetch(`${BACKEND_URL}/verifyAnswer`, {
+        const res = await fetch(`api/verifyAnswer`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
