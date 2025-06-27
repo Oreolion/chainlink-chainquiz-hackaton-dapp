@@ -12,6 +12,7 @@ import { useChainQuiz } from "../src/hooks/useChainQuiz";
 import { supabase } from "../src/utils/supabaseClient";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { formatEther, isAddress } from "viem";
+import { keccak256,  stringToHex } from "viem";
 import chainQuizABI from "../src/abis/ChainQuizABI.json";
 
 // Environment variables
@@ -216,7 +217,7 @@ export default function Home() {
       const { data, error } = await supabase
         .from("Quizzes")
         .select("questions")
-        .eq("id", quizId)
+        .eq("quizid", quizId)
         .single();
       if (error) throw error;
       console.log("debugFetch success:", {
@@ -234,89 +235,127 @@ export default function Home() {
   }, []);
 
   // Debug Generate Questions
-  const debugGenerateQuestions = useCallback(async () => {
-    if (!address) {
-      setErrorMessage("Connect wallet to generate questions");
-      return;
+const debugGenerateQuestions = useCallback(async () => {
+  if (!address || !chainQuiz) {
+    setErrorMessage("Connect wallet to generate questions");
+    return;
+  }
+  setIsLoading(true);
+  try {
+    // 1) numeric ID for Supabase `id` (bigint)
+    const numericId = BigInt(Date.now());
+    // 2) human‐friendly quizId
+    const quizId = `quiz-${numericId}`;
+    // 3) make a 32-byte requestId by hashing the hexified quizId
+    const mockRequestId = keccak256(stringToHex(quizId)) as `0x${string}`;
+
+    // 4) mock up your 10 questions
+    const mockQuestions = Array.from({ length: 10 }, (_, i) => ({
+      id:   `q${i + 1}`,
+      domain: selectedDomains[i % selectedDomains.length],
+      text: `Question ${i + 1} — ${selectedDomains[i % selectedDomains.length]} (${difficulty})`,
+      options: ["Option 1 (Correct)", "Option 2", "Option 3", "Option 4"],
+      correctIndex: 0,
+    }));
+
+    // 5) insert into Supabase (id: bigint, quiz_id: text)
+    const { error } = await supabase.from("Quizzes").insert({
+      id: Number(numericId),     // your bigint PK
+      quiz_id: quizId,           // a text column
+      player_address: address.toLowerCase(),
+      domains: selectedDomains,
+      difficulty: difficulty.toLowerCase(),
+      questions: mockQuestions,
+      started_at: new Date().toISOString(),
+      correct_count: 0,
+      completed_at: null,
+    });
+
+    if (error) {
+      console.error("Supabase insert failed:", error);
+      // refund & cancel on‐chain if Supabase fails
+      try {
+        await chainQuiz.cancelQuiz();
+        console.log("Cancelled on-chain quiz due to Supabase error.");
+      } catch (cErr: any) {
+        console.error("Failed to cancel on-chain quiz:", cErr);
+      }
+      throw new Error(error.message);
     }
-    setIsLoading(true);
-    try {
-      const mockQuizId = `quiz-${Date.now()}`;
-      const mockRequestId = `0x${Buffer.from(mockQuizId).toString(
-        "hex"
-      )}` as `0x${string}`;
-      const mockQuestions = Array.from({ length: 10 }, (_, i) => ({
-        id: `q${i + 1}`,
-        domain: selectedDomains[i % selectedDomains.length],
-        text: `Question ${i + 1} on ${
-          selectedDomains[i % selectedDomains.length]
-        } (${difficulty})`,
-        options: ["Option 1 (Correct)", "Option 2", "Option 3", "Option 4"],
-        correctIndex: 0,
-      }));
 
-      const { error } = await supabase.from("Quizzes").insert({
-        id: mockQuizId,
-        player_address: address.toLowerCase(),
-        domains: selectedDomains,
-        difficulty: difficulty.toLowerCase(),
-        questions: mockQuestions,
-        started_at: new Date().toISOString(),
-        correct_count: 0,
-        completed_at: null,
-      });
+    // 6) build your "response" bytes, e.g. "quiz-1234567890|10"
+    const responseHex = stringToHex(`${quizId}|10`);
+    await chainQuiz.debugFulfillRequest(mockRequestId, responseHex, "0x");
 
-      if (error) throw new Error(`Supabase insert failed: ${error.message}`);
-
-      setQuizId(mockQuizId);
-      await chainQuiz.debugFulfillRequest(
-        mockRequestId,
-        `0x${Buffer.from(`${mockQuizId}|10`).toString("hex")}`,
-        "0x"
-      );
-
-      setQuestions(mockQuestions);
-      setEntryState("inQuiz");
-      setTimer(45);
-    } catch (err: any) {
-      console.error("debugGenerateQuestions:", {
-        message: err.message,
-        details: err,
-      });
-      setErrorMessage(`Failed to generate questions: ${err.message}`);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [
-    chainQuiz,
-    address,
-    selectedDomains,
-    difficulty,
-    setQuizId,
-    setQuestions,
-    setEntryState,
-    setTimer,
-  ]);
+    // 7) drive the UI into quiz mode
+    setQuizId(quizId);
+    setQuestions(mockQuestions);
+    setCurrentIndex(0);
+    setEntryState("inQuiz");
+    setTimer(45);
+  } catch (err: any) {
+    console.error("debugGenerateQuestions error:", err);
+    setErrorMessage(`Failed to generate questions: ${err.message}`);
+    setEntryState("idle");
+  } finally {
+    setIsLoading(false);
+  }
+}, [
+  address,
+  chainQuiz,
+  selectedDomains,
+  difficulty,
+  setQuizId,
+  setQuestions,
+  setCurrentIndex,
+  setEntryState,
+  setTimer,
+]);
 
   // Debug Submit Answer
   const debugSubmitAnswer = useCallback(
     async (selectedIndex: number, isCorrect: boolean) => {
-      if (!chainQuiz?.quizId || !address || !chainQuiz?.lastRequestId) {
-        setErrorMessage("Quiz ID, address, or request ID not available");
+      if (
+        !chainQuiz?.quizId ||
+        !address ||
+        !chainQuiz?.lastRequestId ||
+        !quizId ||
+        !questions[currentIndex]?.id ||
+        selectedIndex < 0 ||
+        selectedIndex > 3
+      ) {
+        setErrorMessage(
+          "Invalid input: Quiz ID, address, request ID, question, or answer index (0-3) not available"
+        );
         return;
       }
       setIsLoading(true);
       try {
         const responseBytes = isCorrect ? "0x31" : "0x30";
-        await chainQuiz.debugFulfillRequest(
+        const hash = await chainQuiz.debugFulfillRequest(
           chainQuiz.lastRequestId,
           responseBytes,
           "0x"
         );
+        console.log("debugSubmitAnswer: Transaction sent", {
+          hash,
+          selectedIndex,
+          isCorrect,
+          quizId: chainQuiz.quizId,
+        });
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash,
+          timeout: 30000,
+        });
+        if (receipt.status !== "success") {
+          throw new Error(
+            "Transaction reverted. Check contract logs for details."
+          );
+        }
         const { data, error } = await supabase
           .from("Quizzes")
           .select("correct_count")
-          .eq("id", chainQuiz.quizId)
+          .eq("quizid", chainQuiz.quizId)
           .single();
         if (error) throw new Error(`Supabase fetch failed: ${error.message}`);
         const newCorrectCount = isCorrect
@@ -331,7 +370,7 @@ export default function Home() {
                 ? new Date().toISOString()
                 : null,
           })
-          .eq("id", chainQuiz.quizId);
+          .eq("quizid", chainQuiz.quizId);
         if (updateError)
           throw new Error(`Supabase update failed: ${updateError.message}`);
         console.log("debugSubmitAnswer:", {
@@ -339,18 +378,18 @@ export default function Home() {
           selectedIndex,
           isCorrect,
         });
-        if (isCorrect) {
+        if (isCorrect || currentIndex < questions.length - 1) {
           setCurrentIndex((i) => Math.min(i + 1, questions.length - 1));
         }
         setTimer(45);
       } catch (err: any) {
-        console.error("debugSubmitAnswer:", err.message);
+        console.error("debugSubmitAnswer error:", err.message);
         setErrorMessage(`Failed to submit debug answer: ${err.message}`);
       } finally {
         setIsLoading(false);
       }
     },
-    [chainQuiz, address, currentIndex, questions.length]
+    [chainQuiz, address, currentIndex, questions, quizId, publicClient]
   );
 
   // Fetch Leaderboard
@@ -505,6 +544,8 @@ export default function Home() {
     return () => clearTimeout(timeout);
   }, [entryState]);
 
+  // in your Home component, after you do `startQuiz`:
+
   // Submit Answer
   const submitAnswer = useCallback(
     async (selectedIndex: number) => {
@@ -559,6 +600,16 @@ export default function Home() {
     }
   }, [isHooksInitialized, address, status, chainQuiz, fetchBalance]);
 
+  useEffect(() => {
+    if (entryState === "staking") {
+      // if after 30s we still haven’t seen QuizGenerated, call cancelQuiz()
+      const timer = setTimeout(() => {
+        console.warn("No questions arrived—auto-cancelling");
+        cancelQuiz();
+      }, 30_000);
+      return () => clearTimeout(timer);
+    }
+  }, [entryState, cancelQuiz]);
   // Event Handlers
   const onQuizRequested = useCallback(
     (logs: any[]) => {
@@ -732,6 +783,7 @@ export default function Home() {
     chainQuiz.isActive,
     chainQuiz.numQuestions,
     chainQuiz.rewardUSD,
+    chainQuiz.reward,
     chainQuiz.questionIndex,
     isHooksInitialized,
   ]);
@@ -769,22 +821,31 @@ export default function Home() {
     if (questions.length) console.log("Questions updated:", questions);
   }, [questions]);
 
+  // 1️⃣ countdown
+  useEffect(() => {
+    if (entryState !== "inQuiz") return;
+    if (timer <= 0) return;
+
+    const id = setTimeout(() => setTimer((t) => t - 1), 1000);
+    return () => clearTimeout(id);
+  }, [timer, entryState]);
+
+  // 2️⃣ auto‐submit once
+  const hasAutoSubmitted = useRef(false);
+
   useEffect(() => {
     if (
       !isHooksInitialized ||
-      !["inQuiz", "awaitingAnswer"].includes(entryState)
+      entryState !== "inQuiz" ||
+      hasAutoSubmitted.current
     )
       return;
     if (timer === 0) {
-      submitAnswer(255);
-      return;
+      hasAutoSubmitted.current = true;
+      submitAnswer(255).catch(() => {
+        /* swallow error so it doesn’t spam you */
+      });
     }
-    timerRef.current = setTimeout(() => setTimer((t) => t - 1), 1000);
-    return () => {
-      if (timerRef.current) {
-        clearTimeout(timerRef.current);
-      }
-    };
   }, [isHooksInitialized, timer, entryState, submitAnswer]);
 
   useEffect(() => {
@@ -976,6 +1037,22 @@ export default function Home() {
                       ) : (
                         "Start Quiz"
                       )}
+                    </button>
+                  </div>
+                )}
+
+              {/* Cancel button: only when we’re staking or already in-quiz */}
+              {isHooksInitialized &&
+                status === "connected" &&
+                address &&
+                (entryState === "staking" || entryState === "inQuiz") && (
+                  <div className="mt-4 flex justify-center">
+                    <button
+                      onClick={cancelQuiz}
+                      disabled={isLoading}
+                      className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      Cancel Quiz
                     </button>
                   </div>
                 )}
