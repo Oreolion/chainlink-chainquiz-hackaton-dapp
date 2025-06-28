@@ -4,19 +4,19 @@ import {
   elizaLogger,
   settings,
   stringToUuid,
-  type Character,
+  Character,
 } from "@elizaos/core";
 import { bootstrapPlugin } from "@elizaos/plugin-bootstrap";
 import { createNodePlugin } from "@elizaos/plugin-node";
-import { ChainQuizPlugin } from "./custom-plugins/index.ts";
+import { ChainQuizPlugin } from "./custom-plugins/index";
 import { evmPlugin } from "@elizaos/plugin-evm";
 import fs from "fs";
 import net from "net";
 import path from "path";
 import { fileURLToPath } from "url";
-import { initializeDbCache } from "./cache/index.ts";
-import { character } from "./character.ts";
-import { startChat } from "./chat/index.ts";
+import { initializeDbCache } from "./cache/index";
+import { character } from "./character";
+import { startChat } from "./chat/index";
 import {
   getTokenForProvider,
   loadCharacters,
