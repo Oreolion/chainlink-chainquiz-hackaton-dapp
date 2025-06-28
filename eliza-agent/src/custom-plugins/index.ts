@@ -1,9 +1,9 @@
-export * from "./providers/wallet.ts";
-export * from "./types/index.ts";
+export * from "./providers/wallet";
+export * from "./types/index";
 
 import type { Plugin } from "@elizaos/core";
-import { evmWalletProvider } from "./providers/wallet.ts";
-import { chainQuizAction } from "./actions/ChainQuizAction.ts";
+import { evmWalletProvider } from "./providers/wallet";
+import { chainQuizAction } from "./actions/ChainQuizAction";
 
 export const ChainQuizPlugin: Plugin = {
   name: "chainQuiz",

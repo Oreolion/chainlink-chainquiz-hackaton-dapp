@@ -22,9 +22,9 @@ import {
   type Memory,
   type State,
 } from "@elizaos/core";
-import { initWalletProvider, WalletProvider } from "../providers/wallet.ts";
-import type { QuizParams, Transaction } from "../types/index.ts";
-import { chainQuizTemplate } from "../templates/index.ts";
+import { initWalletProvider, WalletProvider } from "../providers/wallet";
+import type { QuizParams, Transaction } from "../types/index";
+import { chainQuizTemplate } from "../templates/index";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";

@@ -1,6 +1,7 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import { useCallback, useEffect, useState } from "react";
 import { useAccount, useReadContract, useWriteContract } from "wagmi";
-import { createPublicClient, http } from "viem";
+import { createPublicClient, decodeErrorResult, http } from "viem";
 import { baseSepolia } from "wagmi/chains";
 import { formatEther, stringToHex } from "viem";
 import chainQuizData from "../abis/ChainQuizABI.json";
@@ -11,15 +12,14 @@ const CHAIN_QUIZ_ADDRESS = process.env
   .NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
 const RPC_URL =
   process.env.NEXT_PUBLIC_BASE_RPC_URL || "https://sepolia.base.org";
-const BACKEND_URL =
-  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000";
+// const BACKEND_URL =  process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000";
 
 export function useChainQuiz() {
   const { address, status } = useAccount();
   const { writeContractAsync } = useWriteContract();
   const [quizId, setQuizId] = useState<string>("");
   const [isActive, setIsActive] = useState<boolean>(false);
-  const [isLoading, setIsLoading] = useState<boolean>(false);
+//   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [questionIndex, setQuestionIndex] = useState<number>(0);
   const [numQuestions, setNumQuestions] = useState<number>(0);
   const [lastRequestId, setLastRequestId] = useState<`0x${string}` | null>(
@@ -49,7 +49,7 @@ export function useChainQuiz() {
         quizIdFromContract,
         questionIndexFromContract,
         correctCountFromContract,
-        startedAtFromContract,
+        // startedAtFromContract,
         activeFromContract,
         numQuestionsFromContract,
       ] = sessionData as [
@@ -62,14 +62,14 @@ export function useChainQuiz() {
       ];
 
       setQuizId(quizIdFromContract);
-      setIsActive(activeFromContract);
+      setIsActive(Boolean(activeFromContract));
       setQuestionIndex(Number(questionIndexFromContract));
       setNumQuestions(Number(numQuestionsFromContract));
       const safeCorrectCount =
         typeof correctCountFromContract === "bigint"
           ? correctCountFromContract
           : BigInt(correctCountFromContract);
-      setReward(formatEther(safeCorrectCount * 50000000000000000n));
+      setReward(formatEther(safeCorrectCount * BigInt("50000000000000000")));
       setRewardUSD("0");
     }
   }, [sessionData, address]);
@@ -114,7 +114,7 @@ export function useChainQuiz() {
         // Refresh the on-chain session data
         await refetchSession();
         return hash;
-      } catch (err: any) {
+      } catch (err: unknown) {
         console.error("startQuiz error:", err);
         throw err;
       }
@@ -140,12 +140,17 @@ export function useChainQuiz() {
         console.log("submitAnswer success:", { hash, status: receipt.status });
         await refetchSession();
         return hash;
-      } catch (err: any) {
-        console.error("submitAnswer error:", {
-          message: err.message,
-          details: err,
-        });
-        throw new Error(err.message);
+      } catch (err: unknown) {
+        if (err instanceof Error) {
+          console.error("submitAnswer error:", {
+            message: err.message,
+            details: err,
+          });
+          throw new Error(err.message);
+        } else {
+          console.error("submitAnswer error:", { details: err });
+          throw new Error("An unknown error occurred");
+        }
       }
     },
     [
@@ -173,7 +178,14 @@ export function useChainQuiz() {
         abi: chainQuizABI,
         functionName: "sessions",
         args: [address],
-      });
+      }) as [
+        string,
+        bigint | number,
+        bigint | number,
+        bigint | number,
+        boolean,
+        bigint | number
+      ];
       const isActive = session[4];
       const startedAt = Number(session[3]);
       const currentTime = Math.floor(Date.now() / 1000);
@@ -219,6 +231,10 @@ export function useChainQuiz() {
               decodedError.args || []
             }`;
           } catch (decodeErr) {
+            console.error("cancelQuiz: Failed to decode revert reason", {
+              decodeErr,
+              simulationError,
+            });
             revertReason = `Failed to decode revert: ${simulationError.message}`;
           }
         }

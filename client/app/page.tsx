@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 "use client";
 
 import { useEffect, useState, useRef, useCallback, useMemo } from "react";
@@ -5,7 +6,7 @@ import {
   useAccount,
   usePublicClient,
   useWatchContractEvent,
-  useAccountEffect, // Added for connection handling
+  useAccountEffect,
 } from "wagmi";
 import { useQuizToken } from "../src/hooks/useQuizToken";
 import { useChainQuiz } from "../src/hooks/useChainQuiz";
@@ -13,16 +14,19 @@ import { supabase } from "../src/utils/supabaseClient";
 import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { formatEther, isAddress } from "viem";
 import { keccak256, stringToHex } from "viem";
-import chainQuizABI from "../src/abis/ChainQuizABI.json";
+import chainQuizArtifact from "../src/abis/ChainQuizABI.json";
+const chainQuizABI = chainQuizArtifact.abi;
 
 // Environment variables
 const CHAIN_QUIZ_ADDRESS = process.env
   .NEXT_PUBLIC_CHAINQUIZ_ADDRESS as `0x${string}`;
 const QUIZ_TOKEN_ADDRESS = process.env
   .NEXT_PUBLIC_QUIZTOKEN_ADDRESS as `0x${string}`;
+const ENTRY_FEE = BigInt(
+  process.env.NEXT_PUBLIC_ENTRY_FEE ?? "10000000000000000"
+);
 
 // ChainQuiz contract ABI for events
-
 function ErrorBoundary({ children }: { children: React.ReactNode }) {
   const [hasError, setHasError] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,7 +71,7 @@ function ErrorBoundary({ children }: { children: React.ReactNode }) {
 }
 
 export default function Home() {
-  // Hooks and state
+  // Hooks and state (moved to top level)
   const { address, status } = useAccount();
   const publicClient = usePublicClient();
   const chainQuizRaw = useChainQuiz();
@@ -87,23 +91,23 @@ export default function Home() {
   const [currentIndex, setCurrentIndex] = useState<number>(0);
   const [timer, setTimer] = useState<number>(45);
   const [entryState, setEntryState] = useState<
-    "idle" | "staking" | "inQuiz" | "awaitingAnswer"
+    "idle" | "staking" | "inQuiz" | "awaitingAnswer" | "completed"
   >("idle");
   const [balance, setBalance] = useState<string>("0");
   const [leaderboard, setLeaderboard] = useState<
     { address: string; score: number }[]
   >([]);
   const [quizId, setQuizId] = useState<string>("");
-  const [reward, setReward] = useState<string>("");
-  const [rewardUSD, setRewardUSD] = useState<string>("");
+  const [, setReward] = useState<string>("");
+  const [, setRewardUSD] = useState<string>("");
   const [answerFeedback, setAnswerFeedback] = useState<string>("");
   const [selectedAnswer, setSelectedAnswer] = useState<number | null>(null);
   const hasFetched = useRef(false);
+  const hasAutoSubmitted = useRef(false);
 
-  const timerRef = useRef<NodeJS.Timeout | null>(null);
-  const ENTRY_FEE = BigInt(
-    process.env.NEXT_PUBLIC_ENTRY_FEE ?? "10000000000000000"
-  );
+  // Validate environment variables (moved after hooks)
+  const isValidConfig =
+    isAddress(CHAIN_QUIZ_ADDRESS) && isAddress(QUIZ_TOKEN_ADDRESS);
 
   // Debug wallet connection state
   useEffect(() => {
@@ -130,31 +134,6 @@ export default function Home() {
       hasFetched.current = false;
     },
   });
-
-  // Validate environment variables
-  const isValidConfig =
-    isAddress(CHAIN_QUIZ_ADDRESS) && isAddress(QUIZ_TOKEN_ADDRESS);
-  if (!isValidConfig) {
-    return (
-      <ErrorBoundary>
-        <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
-          <header className="flex justify-between items-center p-6 bg-gray-800/70 backdrop-blur-sm">
-            <h1 className="text-2xl font-bold text-blue-600">ChainQuiz</h1>
-            <ConnectButton showBalance={false} />
-          </header>
-          <main className="flex-1 p-6 space-y-6">
-            <div className="p-4 bg-red-500/20 border border-red-600 rounded-lg text-center">
-              <p className="text-red-500">
-                Error: Invalid contract addresses. Check
-                NEXT_PUBLIC_CHAINQUIZ_ADDRESS and NEXT_PUBLIC_QUIZ_TOKEN_ADDRESS
-                in .env.local
-              </p>
-            </div>
-          </main>
-        </div>
-      </ErrorBoundary>
-    );
-  }
 
   // Debounce utility
   const debounce = (func: (...args: any[]) => void, wait: number) => {
@@ -186,7 +165,7 @@ export default function Home() {
             ? raw
             : typeof raw === "number"
             ? BigInt(raw)
-            : 0n;
+            : BigInt(0);
         setBalance(formatEther(bal));
         console.log("fetchBalance: Success", {
           balance: formatEther(bal),
@@ -236,7 +215,7 @@ export default function Home() {
     }
   }, []);
 
-  // Debug Generate Questions
+  // Debug Generate Questions (left unchanged as requested)
   const debugGenerateQuestions = useCallback(async () => {
     if (!address || !chainQuiz) {
       setErrorMessage("Connect wallet to generate questions");
@@ -266,6 +245,7 @@ export default function Home() {
       const { error } = await supabase.from("Quizzes").insert({
         id: Number(numericId), // your bigint PK
         quiz_id: quizId, // a text column
+        num_questions: mockQuestions.length,
         player_address: address.toLowerCase(),
         domains: selectedDomains,
         difficulty: difficulty.toLowerCase(),
@@ -315,85 +295,6 @@ export default function Home() {
     setEntryState,
     setTimer,
   ]);
-  // Debug Submit Answer
-  const debugSubmitAnswer = useCallback(
-    async (selectedIndex: number, isCorrect: boolean) => {
-      if (
-        !chainQuiz?.quizId ||
-        !address ||
-        !chainQuiz?.lastRequestId ||
-        !quizId ||
-        !questions[currentIndex]?.id ||
-        selectedIndex < 0 ||
-        selectedIndex > 3
-      ) {
-        setErrorMessage(
-          "Invalid input: Quiz ID, address, request ID, question, or answer index (0-3) not available"
-        );
-        return;
-      }
-      setIsLoading(true);
-      try {
-        const responseBytes = isCorrect ? "0x31" : "0x30";
-        const hash = await chainQuiz.debugFulfillRequest(
-          chainQuiz.lastRequestId,
-          responseBytes,
-          "0x"
-        );
-        console.log("debugSubmitAnswer: Transaction sent", {
-          hash,
-          selectedIndex,
-          isCorrect,
-          quizId: chainQuiz.quizId,
-        });
-        const receipt = await publicClient.waitForTransactionReceipt({
-          hash,
-          timeout: 30000,
-        });
-        if (receipt.status !== "success") {
-          throw new Error(
-            "Transaction reverted. Check contract logs for details."
-          );
-        }
-        const { data, error } = await supabase
-          .from("Quizzes")
-          .select("correct_count")
-          .eq("quizid", chainQuiz.quizId)
-          .single();
-        if (error) throw new Error(`Supabase fetch failed: ${error.message}`);
-        const newCorrectCount = isCorrect
-          ? data.correct_count + 1
-          : data.correct_count;
-        const { error: updateError } = await supabase
-          .from("Quizzes")
-          .update({
-            correct_count: newCorrectCount,
-            completed_at:
-              currentIndex === questions.length - 1
-                ? new Date().toISOString()
-                : null,
-          })
-          .eq("quizid", chainQuiz.quizId);
-        if (updateError)
-          throw new Error(`Supabase update failed: ${updateError.message}`);
-        console.log("debugSubmitAnswer:", {
-          quizId: chainQuiz.quizId,
-          selectedIndex,
-          isCorrect,
-        });
-        if (isCorrect || currentIndex < questions.length - 1) {
-          setCurrentIndex((i) => Math.min(i + 1, questions.length - 1));
-        }
-        setTimer(45);
-      } catch (err: any) {
-        console.error("debugSubmitAnswer error:", err.message);
-        setErrorMessage(`Failed to submit debug answer: ${err.message}`);
-      } finally {
-        setIsLoading(false);
-      }
-    },
-    [chainQuiz, address, currentIndex, questions, quizId, publicClient]
-  );
 
   // Fetch Leaderboard
   const fetchLeaderboard = useCallback(async () => {
@@ -493,7 +394,7 @@ export default function Home() {
       // Wait for transaction receipt
       const receipt = await publicClient.waitForTransactionReceipt({
         hash: startHash,
-        timeout: 60000, // 60 seconds
+        timeout: 60000,
       });
       console.log("startQuiz: Receipt", {
         hash: startHash,
@@ -530,7 +431,6 @@ export default function Home() {
     difficulty,
     fetchBalance,
     debugGenerateQuestions,
-    ENTRY_FEE
   ]);
 
   const handleTimeout = useCallback(() => {
@@ -552,8 +452,9 @@ export default function Home() {
           });
       }
     }, 2000);
-  }, [currentIndex, questions, quizId, setCurrentIndex, setEntryState]);
+  }, [currentIndex, questions, quizId]);
 
+  // Staking Timeout
   useEffect(() => {
     if (entryState !== "staking") return;
     const timeout = setTimeout(() => {
@@ -565,10 +466,11 @@ export default function Home() {
         setEntryState("idle");
         setIsLoading(false);
       }
-    }, 30_000); // 30 seconds
+    }, 30_000);
     return () => clearTimeout(timeout);
   }, [entryState]);
 
+  // Countdown Timer
   useEffect(() => {
     let timerInterval: NodeJS.Timeout;
     if (entryState === "inQuiz" && timer > 0) {
@@ -589,41 +491,46 @@ export default function Home() {
   const handleAnswer = useCallback(
     async (selectedIndex: number) => {
       if (!questions[currentIndex]) return;
-      setSelectedAnswer(selectedIndex);
+
       const isCorrect = selectedIndex === questions[currentIndex].correctIndex;
+      setSelectedAnswer(selectedIndex);
       setAnswerFeedback(isCorrect ? "Correct!" : "Incorrect");
 
-      // Update Supabase
       try {
-        const { error } = await supabase
+        // 1) Fetch the current correct_count
+        const { data, error: fetchError } = await supabase
           .from("Quizzes")
-          .update({
-            correct_count: isCorrect
-              ? sql`correct_count + 1`
-              : sql`correct_count`,
-          })
-          .eq("quizid", quizId);
-        if (error) {
-          console.error("handleAnswer: Supabase update failed", {
-            message: error.message,
-            details: error,
-            timestamp: new Date().toISOString(),
-          });
+          .select("correct_count")
+          .eq("quizid", quizId)
+          .single();
+
+        if (fetchError) {
+          console.error("handleAnswer: Supabase fetch failed", fetchError);
+        } else {
+          const newCount = (data.correct_count ?? 0) + (isCorrect ? 1 : 0);
+
+          // 2) Update with the incremented value
+          const { error: updateError } = await supabase
+            .from("Quizzes")
+            .update({
+              correct_count: newCount,
+            })
+            .eq("quizid", quizId);
+
+          if (updateError) {
+            console.error("handleAnswer: Supabase update failed", updateError);
+          }
         }
       } catch (err: any) {
-        console.error("handleAnswer error:", {
-          message: err.message,
-          details: err,
-          timestamp: new Date().toISOString(),
-        });
+        console.error("handleAnswer unexpected error:", err);
       }
 
-      // Progress to next question
+      // 3) Move on to the next question (or finish)
       setTimeout(() => {
         setAnswerFeedback("");
         setSelectedAnswer(null);
         if (currentIndex + 1 < questions.length) {
-          setCurrentIndex(currentIndex + 1);
+          setCurrentIndex((i) => i + 1);
           setTimer(45);
         } else {
           setEntryState("completed");
@@ -635,12 +542,10 @@ export default function Home() {
               if (error) console.error("Quiz completion update failed", error);
             });
         }
-      }, 2000); // Show feedback for 2 seconds
+      }, 2000);
     },
-    [currentIndex, questions, quizId, setCurrentIndex, setEntryState]
+    [currentIndex, questions, quizId]
   );
-
-  // in your Home component, after you do `startQuiz`:
 
   // Submit Answer
   const submitAnswer = useCallback(
@@ -698,7 +603,6 @@ export default function Home() {
 
   useEffect(() => {
     if (entryState === "staking") {
-      // if after 30s we still haven’t seen QuizGenerated, call cancelQuiz()
       const timer = setTimeout(() => {
         console.warn("No questions arrived—auto-cancelling");
         cancelQuiz();
@@ -706,6 +610,7 @@ export default function Home() {
       return () => clearTimeout(timer);
     }
   }, [entryState, cancelQuiz]);
+
   // Event Handlers
   const onQuizRequested = useCallback(
     (logs: any[]) => {
@@ -853,6 +758,7 @@ export default function Home() {
     [address, fetchBalance]
   );
 
+  // Sync Quiz State
   useEffect(() => {
     if (!isHooksInitialized) return;
     console.log("entryState effect:", {
@@ -884,6 +790,7 @@ export default function Home() {
     isHooksInitialized,
   ]);
 
+  // Initial Data Fetch
   useEffect(() => {
     async function fetchInitialData() {
       const { data, error } = await supabase.from("Quizzes").select("*");
@@ -913,11 +820,12 @@ export default function Home() {
     fetchInitialData();
   }, []);
 
+  // Log Questions Update
   useEffect(() => {
     if (questions.length) console.log("Questions updated:", questions);
   }, [questions]);
 
-  // 1️⃣ countdown
+  // Countdown
   useEffect(() => {
     if (entryState !== "inQuiz") return;
     if (timer <= 0) return;
@@ -926,9 +834,7 @@ export default function Home() {
     return () => clearTimeout(id);
   }, [timer, entryState]);
 
-  // 2️⃣ auto‐submit once
-  const hasAutoSubmitted = useRef(false);
-
+  // Auto-submit once
   useEffect(() => {
     if (
       !isHooksInitialized ||
@@ -944,6 +850,7 @@ export default function Home() {
     }
   }, [isHooksInitialized, timer, entryState, submitAnswer]);
 
+  // Leaderboard Periodic Fetch
   useEffect(() => {
     console.log("Leaderboard effect: Starting periodic fetch", {
       timestamp: new Date().toISOString(),
@@ -1007,6 +914,7 @@ export default function Home() {
     enabled: true,
   });
 
+  // Render
   return (
     <ErrorBoundary>
       <div className="min-h-screen flex flex-col bg-gray-900 text-gray-100">
@@ -1016,7 +924,15 @@ export default function Home() {
         </header>
 
         <main className="flex-1 p-6 space-y-6">
-          {isLoading ? (
+          {!isValidConfig ? (
+            <div className="p-4 bg-red-500/20 border border-red-600 rounded-lg text-center">
+              <p className="text-red-500">
+                Error: Invalid contract addresses. Check
+                NEXT_PUBLIC_CHAINQUIZ_ADDRESS and NEXT_PUBLIC_QUIZ_TOKEN_ADDRESS
+                in .env.local
+              </p>
+            </div>
+          ) : isLoading ? (
             <div className="flex items-center justify-center min-h-[calc(100vh-80px)]">
               <div className="text-center">
                 <div className="inline-block animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mb-2"></div>
@@ -1025,16 +941,6 @@ export default function Home() {
             </div>
           ) : (
             <>
-              {!isValidConfig && (
-                <div className="p-4 bg-red-500/20 border border-red-600 rounded-lg text-center">
-                  <p className="text-red-500">
-                    Error: Invalid contract addresses. Check
-                    NEXT_PUBLIC_CHAINQUIZ_ADDRESS and
-                    NEXT_PUBLIC_QUIZ_TOKEN_ADDRESS in .env.local
-                  </p>
-                </div>
-              )}
-
               {isValidConfig && !isHooksInitialized && (
                 <div className="p-4 bg-red-500/20 border border-red-600 rounded-lg text-center">
                   <p className="text-red-500">
@@ -1125,7 +1031,7 @@ export default function Home() {
                       }
                       className="mt-2 w-full py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-semibold disabled:bg-gray-600 disabled:cursor-not-allowed relative"
                     >
-                      {isLoading && entryState === "staking" ? (
+                      {isLoading ? (
                         <span className="flex items-center justify-center">
                           <span className="animate-spin rounded-full h-5 w-5 border-b-2 border-white mr-2"></span>
                           Starting Quiz...
@@ -1140,8 +1046,7 @@ export default function Home() {
               {isHooksInitialized &&
                 status === "connected" &&
                 address &&
-                entryState === "inQuiz" &&
-                entryState === "staking" && (
+                entryState === "inQuiz" && (
                   <div className="p-6 bg-blue-800/20 rounded-lg shadow-xl space-y-4">
                     <h2 className="text-2xl font-bold text-blue-400">
                       Quiz in Progress (Question {currentIndex + 1}/10)
@@ -1156,7 +1061,7 @@ export default function Home() {
                         </p>
                         <ul className="space-y-2">
                           {questions[currentIndex].options.map(
-                            (option, idx) => (
+                            (option: string, idx: number) => (
                               <li key={idx}>
                                 <button
                                   onClick={() => handleAnswer(idx)}
@@ -1191,9 +1096,48 @@ export default function Home() {
                     ) : (
                       <p className="text-red-500">No questions available</p>
                     )}
+                    <button
+                      onClick={cancelQuiz}
+                      disabled={isLoading}
+                      className="mt-4 w-full py-2 bg-red-600 hover:bg-red-700 rounded-lg text-white font-semibold disabled:bg-gray-600 disabled:cursor-not-allowed"
+                    >
+                      Cancel Quiz
+                    </button>
                   </div>
                 )}
-              {entryState === "completed" && (
+
+              {isHooksInitialized &&
+                status === "connected" &&
+                address &&
+                entryState === "staking" && (
+                  <div className="p-6 bg-blue-800/20 rounded-lg shadow-xl space-y-4 text-center border border-blue-700">
+                    <h2 className="text-2xl font-bold text-blue-400">
+                      Waiting for Quiz Generation...
+                    </h2>
+                    <p className="text-gray-200">
+                      Please wait while the quiz is being generated on-chain.
+                      This may take a moment.
+                    </p>
+                    <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
+                    {errorMessage && (
+                      <div>
+                        <p className="text-red-500 mt-2">{errorMessage}</p>
+                        <button
+                          onClick={() => {
+                            setErrorMessage("");
+                            setEntryState("idle");
+                            setIsLoading(false);
+                          }}
+                          className="mt-4 px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-semibold"
+                        >
+                          Retry
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+              {isHooksInitialized && entryState === "completed" && (
                 <div className="p-6 bg-blue-800/20 rounded-lg shadow-xl space-y-4 text-center">
                   <h2 className="text-2xl font-bold text-blue-400">
                     Quiz Completed!
@@ -1218,59 +1162,6 @@ export default function Home() {
                   </button>
                 </div>
               )}
-
-              {/* Cancel button: only when we’re staking or already in-quiz */}
-              {isHooksInitialized &&
-                status === "connected" &&
-                address &&
-                (entryState === "staking" || entryState === "inQuiz") && (
-                  <div className="mt-4 flex justify-center">
-                    <button
-                      onClick={cancelQuiz}
-                      disabled={isLoading}
-                      className="px-4 py-2 bg-red-600 hover:bg-red-700 rounded-lg text-white font-semibold disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      Cancel Quiz
-                    </button>
-                  </div>
-                )}
-
-              {isHooksInitialized &&
-                entryState === "inQuiz" &&
-                questions.length > 0 && (
-                  <div className="p-6 bg-gray-800 rounded-lg shadow-xl space-y-6">
-                    <div className="flex justify-between items-center text-lg font-medium">
-                      <span>
-                        Question {currentIndex + 1} / {questions.length}
-                      </span>
-                      <span className="text-blue-400">Time: {timer}s</span>
-                    </div>
-                    <h2 className="text-2xl font-bold text-gray-100 mb-4">
-                      {questions[currentIndex]?.text}
-                    </h2>
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {questions[currentIndex]?.options.map(
-                        (option: string, i: number) => (
-                          <button
-                            key={i}
-                            onClick={() => submitAnswer(i)}
-                            disabled={isLoading || entryState !== "inQuiz"}
-                            className="w-full p-4 bg-gray-700 hover:bg-blue-600 rounded-lg text-left transition duration-200 disabled:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                          >
-                            {option}
-                          </button>
-                        )
-                      )}
-                    </div>
-                    <button
-                      onClick={cancelQuiz}
-                      disabled={isLoading}
-                      className="mt-4 w-full py-2 bg-red-600 hover:bg-red-700 rounded-lg text-white font-semibold disabled:bg-gray-600 disabled:cursor-not-allowed"
-                    >
-                      Cancel Quiz
-                    </button>
-                  </div>
-                )}
 
               {isHooksInitialized &&
                 entryState === "awaitingAnswer" &&
@@ -1306,33 +1197,6 @@ export default function Home() {
                   </div>
                 )}
 
-              {isHooksInitialized && entryState === "staking" && (
-                <div className="p-6 bg-blue-800/20 rounded-lg shadow-xl space-y-4 text-center border border-blue-700">
-                  <h2 className="text-2xl font-bold text-blue-400">
-                    Waiting for Quiz Generation...
-                  </h2>
-                  <p className="text-gray-200">
-                    Please wait while the quiz is being generated on-chain. This
-                    may take a moment.
-                  </p>
-                  <div className="inline-block animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-                  {errorMessage && (
-                    <div>
-                      <p className="text-red-500 mt-2">{errorMessage}</p>
-                      <button
-                        onClick={() => {
-                          setErrorMessage("");
-                          setEntryState("idle");
-                          setIsLoading(false);
-                        }}
-                        className="mt-4 px-6 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg text-white font-semibold"
-                      >
-                        Retry
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
               <div className="p-4 bg-white/5 rounded-lg shadow-lg space-y-2">
                 <h2 className="text-lg font-semibold text-gray-200 flex justify-between items-center">
                   Leaderboard

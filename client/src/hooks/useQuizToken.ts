@@ -2,7 +2,6 @@ import { useAccount, useWriteContract } from "wagmi";
 import { createPublicClient, http } from "viem";
 import { baseSepolia } from "wagmi/chains";
 import QuizTokenABIJson from "../abis/QuizTokenABI.json";
-import { Address } from "viem";
 
 const QUIZ_TOKEN_ADDRESS = process.env.NEXT_PUBLIC_QUIZTOKEN_ADDRESS as
   | `0x${string}`

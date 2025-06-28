@@ -1,5 +1,5 @@
 import { Character, Clients, defaultCharacter, ModelProviderName } from "@elizaos/core";
-import  { ChainQuizPlugin } from "./custom-plugins/index.ts";
+import  { ChainQuizPlugin } from "./custom-plugins/index";
 
 export const character: Character = {
   ...defaultCharacter,
