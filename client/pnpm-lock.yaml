@@ -38,6 +38,9 @@ importers:
       next:
         specifier: 15.3.3
         version: 15.3.3(@opentelemetry/api@1.9.0)(react-dom@19.1.0(react@19.1.0))(react@19.1.0)
+      node-cache:
+        specifier: ^5.1.2
+        version: 5.1.2
       openai:
         specifier: ^5.8.1
         version: 5.8.2(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)
@@ -69,6 +72,9 @@ importers:
       '@types/node':
         specifier: ^20
         version: 20.19.2
+      '@types/node-cache':
+        specifier: ^4.2.5
+        version: 4.2.5
       '@types/react':
         specifier: ^19
         version: 19.1.8
@@ -2888,6 +2894,10 @@ packages:
 
   '@types/ms@2.1.0':
     resolution: {integrity: sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==}
+
+  '@types/node-cache@4.2.5':
+    resolution: {integrity: sha512-faK2Owokboz53g8ooq2dw3iDJ6/HMTCIa2RvMte5WMTiABy+wA558K+iuyRtlR67Un5q9gEKysSDtqZYbSa0Pg==}
+    deprecated: This is a stub types definition. node-cache provides its own type definitions, so you do not need this installed.
 
   '@types/node-fetch@2.6.12':
     resolution: {integrity: sha512-8nneRWKCg3rMtF69nLQJnOYUcbafYeFSjqkw3jCRLsqkWFlHaoQrr5mXmofFGOx3DKn7UfmBMyov8ySvLRVldA==}
@@ -12348,6 +12358,10 @@ snapshots:
 
   '@types/ms@2.1.0': {}
 
+  '@types/node-cache@4.2.5':
+    dependencies:
+      node-cache: 5.1.2
+
   '@types/node-fetch@2.6.12':
     dependencies:
       '@types/node': 20.19.2
@@ -14945,7 +14959,7 @@ snapshots:
 
   extract-zip@2.0.1:
     dependencies:
-      debug: 4.3.4
+      debug: 4.4.1
       get-stream: 5.2.0
       yauzl: 2.10.0
     optionalDependencies:

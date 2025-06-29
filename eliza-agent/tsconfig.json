@@ -21,5 +21,6 @@
     "moduleDetection": "force",
     "allowArbitraryExtensions": true,
     "strictPropertyInitialization": false,
+    "types": ["node", "better-sqlite3", "node-cache"],
   }
 }
