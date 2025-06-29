@@ -1,15 +1,15 @@
 {
-  "version": 2,
   "builds": [
     {
-      "src": "client/next.config.js",
-      "use": "@vercel/next"
+      "src": "package.json",
+      "use": "@vercel/node",
+      "config": {
+        "installCommand": "pnpm install --shamefully-hoist",
+        "buildCommand": "cd ../eliza-agent && pnpm build && cd ../client && pnpm build"
+      }
     }
   ],
   "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "/client/$1"
-    }
+    { "src": "/(.*)", "dest": "/" } 
   ]
 }
