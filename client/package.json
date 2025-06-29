@@ -9,7 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@elizaos/core": "^1.0.14",
+    "@elizaos/core": "0.1.7",
     "@elizaos/plugin-bootstrap": "^1.0.14",
     "@elizaos/plugin-evm": "^0.1.8",
     "@elizaos/plugin-node": "0.25.6-alpha.1",
