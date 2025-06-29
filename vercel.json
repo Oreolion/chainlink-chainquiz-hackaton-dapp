@@ -11,5 +11,7 @@
       "src": "/(.*)",
       "dest": "/client/$1"
     }
-  ]
+  ],
+    "rootDirectory": "client"
+
 }
