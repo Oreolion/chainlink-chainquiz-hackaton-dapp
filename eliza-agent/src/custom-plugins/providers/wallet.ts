@@ -200,8 +200,7 @@ export class WalletProvider {
   };
 
   static genChainFromName(chainName: string, customRpcUrl?: string | null): Chain {
-    const baseChain = viemChains[chainName];
-
+    const baseChain = (viemChains as Record<string, Chain | undefined>)[chainName];
     if (!baseChain?.id) {
       throw new Error("Invalid chain name");
     }
@@ -224,7 +223,7 @@ export class WalletProvider {
 
 const genChainsFromRuntime = (runtime: IAgentRuntime): Record<string, Chain> => {
   const chainNames = (runtime.character.settings?.chains?.evm as SupportedChain[]) || [];
-  const chains = {};
+  const chains: Record<string, Chain> = {};
 
   chainNames.forEach(chainName => {
     const rpcUrl = runtime.getSetting("ETHEREUM_PROVIDER_" + chainName.toUpperCase());

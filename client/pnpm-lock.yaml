@@ -13,7 +13,7 @@ importers:
         version: 0.1.7(@google-cloud/vertexai@1.10.0)(@langchain/core@0.3.61(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)))(axios@1.9.0)(react@19.1.0)(sswr@2.2.0(svelte@5.34.9))(svelte@5.34.9)(vue@3.5.17(typescript@5.8.3))(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))
       '@elizaos/plugin-bootstrap':
         specifier: ^1.0.14
-        version: 1.0.14(@langchain/core@0.3.61(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)))(@opentelemetry/api@1.9.0)(axios@1.9.0)(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8))(whatwg-url@14.2.0)(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))
+        version: 1.0.14(@langchain/core@0.3.61(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)))(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(axios@1.9.0)(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8))(whatwg-url@14.2.0)(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))
       '@elizaos/plugin-evm':
         specifier: ^0.1.8
         version: 0.1.9(@google-cloud/vertexai@1.10.0)(@langchain/core@0.3.61(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)))(@solana/wallet-adapter-base@0.9.27(@solana/web3.js@1.95.8(bufferutil@4.0.9)(utf-8-validate@5.0.10)))(@solana/web3.js@1.95.8(bufferutil@4.0.9)(utf-8-validate@5.0.10))(axios@1.9.0)(bufferutil@4.0.9)(fastestsmallesttextencoderdecoder@1.0.22)(jiti@2.4.2)(postcss@8.5.6)(react@19.1.0)(rollup@4.44.1)(sswr@2.2.0(svelte@5.34.9))(svelte@5.34.9)(typescript@5.8.3)(utf-8-validate@5.0.10)(viem@2.30.6(bufferutil@4.0.9)(typescript@5.8.3)(utf-8-validate@5.0.10)(zod@3.23.8))(vue@3.5.17(typescript@5.8.3))(whatwg-url@14.2.0)(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(yaml@2.8.0)(zod@3.23.8)
@@ -63,6 +63,9 @@ importers:
       '@tailwindcss/postcss':
         specifier: ^4
         version: 4.1.8
+      '@types/better-sqlite3':
+        specifier: ^7.6.13
+        version: 7.6.13
       '@types/node':
         specifier: ^20
         version: 20.19.0
@@ -2865,6 +2868,9 @@ packages:
 
   '@types/aws-lambda@8.10.150':
     resolution: {integrity: sha512-AX+AbjH/rH5ezX1fbK8onC/a+HyQHo7QGmvoxAE42n22OsciAxvZoZNEr22tbXs8WfP1nIsBjKDpgPm3HjOZbA==}
+
+  '@types/better-sqlite3@7.6.13':
+    resolution: {integrity: sha512-NMv9ASNARoKksWtsq/SHakpYAYnhBrQgGD8zkLYk/jaK8jUGn08CfEdTRgYhMypUQAfzSP8W6gNLe0q19/t4VA==}
 
   '@types/chrome@0.0.278':
     resolution: {integrity: sha512-PDIJodOu7o54PpSOYLybPW/MDZBCjM1TKgf31I3Q/qaEbNpIH09rOM3tSEH3N7Q+FAqb1933LhF8ksUPYeQLNg==}
@@ -9584,10 +9590,10 @@ snapshots:
       - typeorm
       - ws
 
-  '@elizaos/plugin-bootstrap@1.0.14(@langchain/core@0.3.61(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)))(@opentelemetry/api@1.9.0)(axios@1.9.0)(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8))(whatwg-url@14.2.0)(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))':
+  '@elizaos/plugin-bootstrap@1.0.14(@langchain/core@0.3.61(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)))(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(axios@1.9.0)(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8))(whatwg-url@14.2.0)(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))':
     dependencies:
       '@elizaos/core': 1.0.14(@langchain/core@0.3.61(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)))(axios@1.9.0)(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8))(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))
-      '@elizaos/plugin-sql': 1.0.14(@langchain/core@0.3.61(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)))(@opentelemetry/api@1.9.0)(axios@1.9.0)(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8))(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))
+      '@elizaos/plugin-sql': 1.0.14(@langchain/core@0.3.61(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)))(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(axios@1.9.0)(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8))(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))
       whatwg-url: 14.2.0
     transitivePeerDependencies:
       - '@aws-sdk/client-rds-data'
@@ -9779,12 +9785,12 @@ snapshots:
       - ws
       - zod
 
-  '@elizaos/plugin-sql@1.0.14(@langchain/core@0.3.61(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)))(@opentelemetry/api@1.9.0)(axios@1.9.0)(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8))(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))':
+  '@elizaos/plugin-sql@1.0.14(@langchain/core@0.3.61(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)))(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(axios@1.9.0)(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8))(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))':
     dependencies:
       '@electric-sql/pglite': 0.3.4
       '@elizaos/core': 1.0.14(@langchain/core@0.3.61(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8)))(axios@1.9.0)(openai@5.8.1(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))(zod@3.23.8))(ws@8.18.0(bufferutil@4.0.9)(utf-8-validate@5.0.10))
       drizzle-kit: 0.31.4
-      drizzle-orm: 0.44.2(@electric-sql/pglite@0.3.4)(@opentelemetry/api@1.9.0)(pg@8.16.2)
+      drizzle-orm: 0.44.2(@electric-sql/pglite@0.3.4)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(pg@8.16.2)
       pg: 8.16.2
     transitivePeerDependencies:
       - '@aws-sdk/client-rds-data'
@@ -12340,6 +12346,10 @@ snapshots:
 
   '@types/aws-lambda@8.10.150': {}
 
+  '@types/better-sqlite3@7.6.13':
+    dependencies:
+      '@types/node': 20.19.0
+
   '@types/chrome@0.0.278':
     dependencies:
       '@types/filesystem': 0.0.36
@@ -14271,10 +14281,11 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  drizzle-orm@0.44.2(@electric-sql/pglite@0.3.4)(@opentelemetry/api@1.9.0)(pg@8.16.2):
+  drizzle-orm@0.44.2(@electric-sql/pglite@0.3.4)(@opentelemetry/api@1.9.0)(@types/better-sqlite3@7.6.13)(pg@8.16.2):
     optionalDependencies:
       '@electric-sql/pglite': 0.3.4
       '@opentelemetry/api': 1.9.0
+      '@types/better-sqlite3': 7.6.13
       pg: 8.16.2
 
   dunder-proto@1.0.1:

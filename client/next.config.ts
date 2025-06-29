@@ -2,7 +2,8 @@ import type { NextConfig } from "next";
 
 /** @type {import('next').NextConfig} */
 const nextConfig: NextConfig  = {
-  reactStrictMode: true,
+    output: 'standalone',
+    reactStrictMode: true,
   webpack: (config) => {
     config.resolve.fallback = {
       ...config.resolve.fallback,

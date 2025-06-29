@@ -16,6 +16,7 @@ import { initializeDatabase } from "./database/index.ts";
 import express from "express";
 import cors from "cors"; // Add CORS
 import OpenAI from "openai";
+import { createClient } from "@supabase/supabase-js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);

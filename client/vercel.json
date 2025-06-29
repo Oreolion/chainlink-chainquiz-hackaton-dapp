@@ -1,0 +1,15 @@
+{
+  "builds": [
+    {
+      "src": "package.json",
+      "use": "@vercel/node",
+      "config": {
+        "installCommand": "pnpm install --shamefully-hoist",
+        "buildCommand": "cd ../eliza-agent && pnpm build && cd ../client && pnpm build"
+      }
+    }
+  ],
+  "routes": [
+    { "src": "/(.*)", "dest": "/" } 
+  ]
+}
